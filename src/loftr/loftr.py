@@ -152,10 +152,13 @@ class LoFTR(nn.Module):
                     mask16_1 = F.interpolate(
                         mask16_1.unsqueeze(1), size=feat_c16_1.shape[-2:],
                         mode='nearest').squeeze(1).bool()
-                logger.info(f"[DCAT16 Inject] feat_c0.shape={feat_c0.shape}, "
-                            f"feat_c16_0.shape={feat_c16_0.shape}, "
-                            f"mask_c0.shape={mask_c0.shape}, "
-                            f"mask16_0.shape={mask16_0.shape}")
+                # Debug only: enable this log when checking 1/16 mask/feature shapes.
+                if self.use_dcat16_inject and not getattr(self, "_dcat16_shape_logged", False):
+                    logger.info(f"[DCAT16 Inject] feat_c0.shape={feat_c0.shape}, "
+                                f"feat_c16_0.shape={feat_c16_0.shape}, "
+                                f"mask_c0.shape={mask_c0.shape}, "
+                                f"mask16_0.shape={mask16_0.shape}")
+                    self._dcat16_shape_logged = True
             feat_c16_t0, feat_c16_t1, matchability16_list0, matchability16_list1 = self.dcat16(
                 feat_c16_0, feat_c16_1, mask16_0, mask16_1)
             # Take last matchability score from each image as covisibility
