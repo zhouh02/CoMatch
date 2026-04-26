@@ -56,6 +56,7 @@ class LoFTR(nn.Module):
         self.loftr_fine = LocalFeatureTransformer_loftr(config["fine"])
 
         # 1/16 DCAT branch (experiment)
+        logger.info(f"[DCAT16 Inject] USE_DCAT16_INJECT={self.use_dcat16_inject}")
         if self.use_dcat16_inject:
             d_model_16 = config['coarse16']['d_model']
             d_model_8 = config['coarse']['d_model']
@@ -66,9 +67,6 @@ class LoFTR(nn.Module):
             if config['coarse16'].get('npe', None) is None:
                 config16['coarse'] = copy.deepcopy(config['coarse16'])
                 config16['coarse']['npe'] = config['coarse']['npe']
-            logger.info(f"[DCAT16 Inject] coarse.npe={config['coarse']['npe']}, "
-                        f"coarse16.npe={config['coarse16'].get('npe', None)}, "
-                        f"USE_DCAT16_INJECT={self.use_dcat16_inject}")
             self.dcat16 = LocalFeatureTransformer(config16)
             self.inject16to8 = CovisibilityInject(d_model_8, d_model_16)
 
