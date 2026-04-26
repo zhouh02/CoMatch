@@ -1,5 +1,7 @@
+import copy
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from einops.einops import rearrange
 
 from .backbone import build_backbone
@@ -10,20 +12,58 @@ from ..utils.misc import detect_NaN
 
 from loguru import logger
 
+
+class CovisibilityInject(nn.Module):
+    """Residual inject: fuse upsampled 1/16 transformed features into 1/8 raw features,
+    gated by upsampled covisibility scores."""
+
+    def __init__(self, c8_dim, c16_dim):
+        super().__init__()
+        self.proj16 = nn.Conv2d(c16_dim, c8_dim, kernel_size=1, bias=False)
+        self.alpha = nn.Parameter(torch.zeros(1))
+
+    def forward(self, feat8, feat16, covi16):
+        """
+        Args:
+            feat8: [B, C8, H8, W8] raw 1/8 features
+            feat16: [B, C16, H16, W16] transformed 1/16 features from DCAT16
+            covi16: [B, 1, H16, W16] covisibility/matchability scores from DCAT16
+        Returns:
+            feat8_fused: [B, C8, H8, W8]
+            covi8: [B, 1, H8, W8]
+        """
+        feat16_up = F.interpolate(feat16, size=feat8.shape[-2:], mode='bilinear', align_corners=False)
+        covi8 = F.interpolate(covi16, size=feat8.shape[-2:], mode='bilinear', align_corners=False)
+        injected = self.proj16(feat16_up)
+        feat8_fused = feat8 + self.alpha * covi8 * injected
+        return feat8_fused, covi8
+
+
 class LoFTR(nn.Module):
     def __init__(self, config, profiler=None):
         super().__init__()
         # Misc
         self.config = config
         self.profiler = profiler
+        self.use_dcat16_inject = config.get('use_dcat16_inject', False)
 
         # Modules
-        self.backbone = build_backbone(config)            
+        self.backbone = build_backbone(config)
         self.loftr_coarse = LocalFeatureTransformer(config)
         self.coarse_matching = CoarseMatching(config['match_coarse'])
         self.fine_preprocess = FinePreprocess(config)
         self.fine_matching = FineMatching(config)
         self.loftr_fine = LocalFeatureTransformer_loftr(config["fine"])
+
+        # 1/16 DCAT branch (experiment)
+        if self.use_dcat16_inject:
+            d_model_16 = config['coarse16']['d_model']
+            d_model_8 = config['coarse']['d_model']
+            # Build a config copy where 'coarse' points to 'coarse16' settings
+            config16 = copy.deepcopy(config)
+            config16['coarse'] = config['coarse16']
+            self.dcat16 = LocalFeatureTransformer(config16)
+            self.inject16to8 = CovisibilityInject(d_model_8, d_model_16)
 
 
     def forward(self, data, timing=False):
@@ -51,6 +91,9 @@ class LoFTR(nn.Module):
                 'feats_x1': ret_dict['feats_x1'],
             })
             (feat_c0, feat_c1) = feats_c.split(data['bs'])
+            # 1/16 features
+            if self.use_dcat16_inject:
+                (feat_c16_0, feat_c16_1) = ret_dict['feats_c16'].split(data['bs'])
         else:  # handle different input shapes
             ret_dict0, ret_dict1 = self.backbone(data['image0']), self.backbone(data['image1'])
             feat_c0 = ret_dict0['feats_c']
@@ -61,6 +104,10 @@ class LoFTR(nn.Module):
                 'feats_x2_1': ret_dict1['feats_x2'],
                 'feats_x1_1': ret_dict1['feats_x1'],
             })
+            # 1/16 features
+            if self.use_dcat16_inject:
+                feat_c16_0 = ret_dict0['feats_c16']
+                feat_c16_1 = ret_dict1['feats_c16']
 
 
         mul = self.config['resolution'][0] // self.config['resolution'][1]
@@ -75,6 +122,22 @@ class LoFTR(nn.Module):
         mask_c0 = mask_c1 = None  # mask is useful in training
         if 'mask0' in data:
             mask_c0, mask_c1 = data['mask0'], data['mask1']
+
+        # 2b. 1/16 DCAT branch + inject (experiment)
+        if self.use_dcat16_inject:
+            feat_c16_t0, feat_c16_t1, matchability16_list0, matchability16_list1 = self.dcat16(
+                feat_c16_0, feat_c16_1, mask_c0, mask_c1)
+            # Take last matchability score from each image as covisibility
+            covi16_0 = matchability16_list0[-1]  # [B, 1, H16, W16]
+            covi16_1 = matchability16_list1[-1]  # [B, 1, H16, W16]
+            # Inject into 1/8 raw features
+            feat_c0, covi8_0 = self.inject16to8(feat_c0, feat_c16_t0, covi16_0)
+            feat_c1, covi8_1 = self.inject16to8(feat_c1, feat_c16_t1, covi16_1)
+            # Store 1/16 matchability scores for potential loss use
+            data.update({
+                'matchability_score_list0_16': matchability16_list0,
+                'matchability_score_list1_16': matchability16_list1,
+            })
 
 
         

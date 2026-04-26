@@ -28,7 +28,20 @@ _CN.LOFTR.COARSE.NO_FLASH = False
 _CN.LOFTR.COARSE.ROPE = True
 _CN.LOFTR.COARSE.NPE = None # [832, 832, long_side, long_side] Suggest setting based on the long side of the input image, especially when the long_side > 832
 
+# 2b. LoFTR-coarse16 module config (1/16 DCAT branch for experiment)
+_CN.LOFTR.COARSE16 = CN()
+_CN.LOFTR.COARSE16.D_MODEL = 256
+_CN.LOFTR.COARSE16.D_FFN = 256
+_CN.LOFTR.COARSE16.NHEAD = 8
+_CN.LOFTR.COARSE16.LAYER_NAMES = ['self', 'cross'] * 4  # same depth as coarse for compatibility with matchability_predictor indexing
+_CN.LOFTR.COARSE16.AGG_SIZE0 = 2
+_CN.LOFTR.COARSE16.AGG_SIZE1 = 2
+_CN.LOFTR.COARSE16.NO_FLASH = False
+_CN.LOFTR.COARSE16.ROPE = True
+_CN.LOFTR.COARSE16.NPE = None
+
 # 3. Coarse-Matching config
+_CN.LOFTR.USE_DCAT16_INJECT = False  # enable 1/16 DCAT + inject experiment
 _CN.LOFTR.MATCH_COARSE = CN()
 _CN.LOFTR.MATCH_COARSE.THR = 0.2 # recommend 0.2 for full model and 25 for optimized model
 _CN.LOFTR.MATCH_COARSE.BORDER_RM = 2

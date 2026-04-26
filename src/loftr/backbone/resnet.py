@@ -65,8 +65,11 @@ class ResNet_8_1_align(nn.Module):
         self.layer2 = self._make_layer(block, block_dims[1], stride=2)  # 1/4
         self.layer3 = self._make_layer(block, block_dims[2], stride=2)  # 1/8
 
-        
+        # layer4: 1/16 feature for DCAT16 branch
+        self.layer4 = self._make_layer(block, block_dims[2], stride=2)  # 1/16
+
         self.layer3_outconv = conv1x1(block_dims[2], block_dims[2])
+        self.layer4_outconv = conv1x1(block_dims[2], block_dims[2])
         
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -89,12 +92,14 @@ class ResNet_8_1_align(nn.Module):
         x1 = self.layer1(x0)  # 1/2
         x2 = self.layer2(x1)  # 1/4
         x3 = self.layer3(x2)  # 1/8
+        x4 = self.layer4(x3)  # 1/16
 
-        
+
         x3_out = self.layer3_outconv(x3)
+        x4_out = self.layer4_outconv(x4)
 
-        
-        return {'feats_c': x3_out, 'feats_f': None, 'feats_x2': x2, 'feats_x1': x1}
+
+        return {'feats_c': x3_out, 'feats_f': None, 'feats_x2': x2, 'feats_x1': x1, 'feats_c16': x4_out}
 
 
 
