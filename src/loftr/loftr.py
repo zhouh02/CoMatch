@@ -132,8 +132,32 @@ class LoFTR(nn.Module):
 
         # 2b. 1/16 DCAT branch + inject (experiment)
         if self.use_dcat16_inject:
+            # Build 1/16 masks: downsample original masks to feat_c16 spatial size
+            mask16_0, mask16_1 = None, None
+            if mask_c0 is not None:
+                if mask_c0.dim() == 3:  # [B, H, W] -> downsample to 1/16
+                    mask16_0 = F.interpolate(
+                        mask_c0.float().unsqueeze(1), size=feat_c16_0.shape[-2:],
+                        mode='nearest').squeeze(1).bool()
+                    mask16_1 = F.interpolate(
+                        mask_c1.float().unsqueeze(1), size=feat_c16_1.shape[-2:],
+                        mode='nearest').squeeze(1).bool()
+                else:  # [B, H*W] -> reshape to [B,H8,W8] then downsample
+                    H8, W8 = data['hw0_c']
+                    mask16_0 = mask_c0.view(data['bs'], H8, W8).float()
+                    mask16_0 = F.interpolate(
+                        mask16_0.unsqueeze(1), size=feat_c16_0.shape[-2:],
+                        mode='nearest').squeeze(1).bool()
+                    mask16_1 = mask_c1.view(data['bs'], data['hw1_c'][0], data['hw1_c'][1]).float()
+                    mask16_1 = F.interpolate(
+                        mask16_1.unsqueeze(1), size=feat_c16_1.shape[-2:],
+                        mode='nearest').squeeze(1).bool()
+                logger.info(f"[DCAT16 Inject] feat_c0.shape={feat_c0.shape}, "
+                            f"feat_c16_0.shape={feat_c16_0.shape}, "
+                            f"mask_c0.shape={mask_c0.shape}, "
+                            f"mask16_0.shape={mask16_0.shape}")
             feat_c16_t0, feat_c16_t1, matchability16_list0, matchability16_list1 = self.dcat16(
-                feat_c16_0, feat_c16_1, mask_c0, mask_c1)
+                feat_c16_0, feat_c16_1, mask16_0, mask16_1)
             # Take last matchability score from each image as covisibility
             covi16_0 = matchability16_list0[-1]  # [B, 1, H16, W16]
             covi16_1 = matchability16_list1[-1]  # [B, 1, H16, W16]
@@ -147,7 +171,7 @@ class LoFTR(nn.Module):
             })
 
 
-        
+
         feat_c0, feat_c1, matchability_score_list0, matchability_score_list1 = self.loftr_coarse(feat_c0, feat_c1, mask_c0, mask_c1)
         data.update({
             'matchability_score_list0': matchability_score_list0,
