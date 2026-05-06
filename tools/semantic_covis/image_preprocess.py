@@ -80,45 +80,51 @@ def pad_bottom_right(
 ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
     """Zero-pad image to square shape at bottom-right.
 
-    Identical to src/utils/dataset.py::pad_bottom_right()
+    Supports:
+        - 2D grayscale: [H, W]
+        - 3D RGB image: [H, W, C]
 
     Args:
         inp: Input array (H, W) or (H, W, C)
-        pad_size: Target size for both dimensions
+        pad_size: Target size for both dimensions (must be >= max(H, W))
         ret_mask: If True, return validity mask
 
     Returns:
         (padded_image, mask)
         - padded_image: Zero-padded array
-        - mask: Boolean mask where valid regions are True (if ret_mask=True)
+          - Grayscale: [pad_size, pad_size]
+          - RGB: [pad_size, pad_size, C]
+        - mask: Boolean mask [pad_size, pad_size], True for valid pixels
 
-    Example:
-        >>> arr = np.zeros((480, 640, 3))
-        >>> padded, mask = pad_bottom_right(arr, 640)
-        >>> mask.shape
-        (640, 640)
-        >>> mask[479, 639]
-        True
-        >>> mask[480, 0]
-        False
+    Raises:
+        ValueError: If input size exceeds pad_size
     """
-    assert isinstance(pad_size, int) and pad_size >= max(inp.shape[-2:])
+    h, w = inp.shape[:2]
+
+    # Check if input fits
+    if h > pad_size or w > pad_size:
+        raise ValueError(
+            "Input size ({}, {}) larger than pad_size ({})".format(h, w, pad_size)
+        )
 
     if inp.ndim == 2:
+        # Grayscale: [H, W]
         padded = np.zeros((pad_size, pad_size), dtype=inp.dtype)
-        padded[: inp.shape[0], : inp.shape[1]] = inp
+        padded[:h, :w] = inp
         mask = None
         if ret_mask:
             mask = np.zeros((pad_size, pad_size), dtype=bool)
-            mask[: inp.shape[0], : inp.shape[1]] = True
+            mask[:h, :w] = True
 
     elif inp.ndim == 3:
-        padded = np.zeros((inp.shape[0], pad_size, pad_size), dtype=inp.dtype)
-        padded[:, : inp.shape[0], : inp.shape[1]] = inp
+        # RGB: [H, W, C]
+        c = inp.shape[2]
+        padded = np.zeros((pad_size, pad_size, c), dtype=inp.dtype)
+        padded[:h, :w, :] = inp
         mask = None
         if ret_mask:
-            mask = np.zeros((inp.shape[0], pad_size, pad_size), dtype=bool)
-            mask[:, : inp.shape[0], : inp.shape[1]] = True
+            mask = np.zeros((pad_size, pad_size), dtype=bool)
+            mask[:h, :w] = True
 
     else:
         raise NotImplementedError("Unsupported input ndim: {}".format(inp.ndim))
@@ -317,7 +323,7 @@ def resize_heatmap_to_grid(
 
 
 # =============================================================================
-# Main Test
+# Visualization Test
 # =============================================================================
 
 
@@ -399,6 +405,93 @@ def visualize_preprocessing(
     print("Saved metadata: {}".format(meta_path))
 
 
+# =============================================================================
+# Unit Tests
+# =============================================================================
+
+
+def test_pad_bottom_right():
+    """Unit tests for pad_bottom_right function."""
+    print("\n" + "=" * 60)
+    print("Unit Tests: pad_bottom_right()")
+    print("=" * 60)
+
+    # Test 1: RGB image [H, W, C]
+    print("\nTest 1: RGB image [544, 832, 3] -> pad to 832")
+    rgb_input = np.random.randint(0, 255, (544, 832, 3), dtype=np.uint8)
+    padded_rgb, mask = pad_bottom_right(rgb_input, 832, ret_mask=True)
+
+    assert padded_rgb.shape == (832, 832, 3), \
+        "RGB padded shape should be (832, 832, 3), got {}".format(padded_rgb.shape)
+    assert mask.shape == (832, 832), \
+        "Mask shape should be (832, 832), got {}".format(mask.shape)
+    assert np.all(mask[:544, :832]), "Valid region should be all True"
+    assert not np.any(mask[544:, :]), "Padding region should be all False"
+    assert not np.any(mask[:544, 832:]), "Right padding should be all False"
+    print("  [PASS] padded_rgb.shape = {}".format(padded_rgb.shape))
+    print("  [PASS] mask.shape = {}".format(mask.shape))
+    print("  [PASS] valid region: ({}, {}) = True".format(
+        np.sum(mask[:544, :832]), 544*832))
+    print("  [PASS] padding region: {} = False".format(
+        np.sum(~mask)))
+
+    # Test 2: Grayscale [H, W]
+    print("\nTest 2: Grayscale [544, 832] -> pad to 832")
+    gray_input = np.random.randint(0, 255, (544, 832), dtype=np.uint8)
+    padded_gray, mask_gray = pad_bottom_right(gray_input, 832, ret_mask=True)
+
+    assert padded_gray.shape == (832, 832), \
+        "Gray padded shape should be (832, 832), got {}".format(padded_gray.shape)
+    assert mask_gray.shape == (832, 832), \
+        "Mask shape should be (832, 832), got {}".format(mask_gray.shape)
+    assert np.all(mask_gray[:544, :832]), "Valid region should be all True"
+    print("  [PASS] padded_gray.shape = {}".format(padded_gray.shape))
+    print("  [PASS] mask_gray.shape = {}".format(mask_gray.shape))
+
+    # Test 3: Square image (no padding needed)
+    print("\nTest 3: Square RGB [832, 832, 3] -> pad to 832 (no change)")
+    square_input = np.random.randint(0, 255, (832, 832, 3), dtype=np.uint8)
+    padded_square, mask_square = pad_bottom_right(square_input, 832, ret_mask=True)
+
+    assert padded_square.shape == (832, 832, 3), \
+        "Square padded shape should be (832, 832, 3)"
+    assert np.all(mask_square), "Full mask should be True"
+    print("  [PASS] no padding needed")
+
+    # Test 4: ValueError for input larger than pad_size
+    print("\nTest 4: ValueError for input larger than pad_size")
+    try:
+        large_input = np.random.randint(0, 255, (900, 900, 3), dtype=np.uint8)
+        pad_bottom_right(large_input, 832, ret_mask=True)
+        print("  [FAIL] Should have raised ValueError")
+        assert False, "Should have raised ValueError"
+    except ValueError as e:
+        print("  [PASS] Raised ValueError: {}".format(str(e)))
+
+    # Test 5: RGB content preservation
+    print("\nTest 5: RGB content preservation")
+    rgb_input = np.ones((100, 200, 3), dtype=np.float32)
+    rgb_input[:, :, 0] = 1.0  # Red channel
+    rgb_input[:, :, 1] = 2.0  # Green channel
+    rgb_input[:, :, 2] = 3.0  # Blue channel
+    padded, _ = pad_bottom_right(rgb_input, 256, ret_mask=False)
+
+    assert np.all(padded[:100, :200, 0] == 1.0), "Red channel mismatch"
+    assert np.all(padded[:100, :200, 1] == 2.0), "Green channel mismatch"
+    assert np.all(padded[:100, :200, 2] == 3.0), "Blue channel mismatch"
+    assert np.all(padded[100:, :] == 0), "Padding should be zero"
+    print("  [PASS] Content preserved correctly")
+
+    print("\n" + "-" * 60)
+    print("All unit tests passed!")
+    print("-" * 60)
+
+
+# =============================================================================
+# Main
+# =============================================================================
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Test image preprocessing for CLIP pseudo-label generation"
@@ -427,42 +520,52 @@ if __name__ == "__main__":
         default=8,
         help="Divisibility factor (default: 8)",
     )
+    parser.add_argument(
+        "--unit-test",
+        action="store_true",
+        help="Run unit tests only (no image processing)",
+    )
     args = parser.parse_args()
 
     print("=" * 60)
     print("Image Preprocessing Test")
     print("=" * 60)
-    print("  Long edge:  {}".format(args.long_edge))
-    print("  Divisible by: {}".format(args.df))
-    print("=" * 60)
 
-    # If no image provided, create a synthetic test
-    if args.image is None or not os.path.exists(args.image):
-        print("\nNo valid image provided, creating synthetic test image...")
+    if args.unit_test:
+        # Run only unit tests
+        test_pad_bottom_right()
+    else:
+        print("  Long edge:  {}".format(args.long_edge))
+        print("  Divisible by: {}".format(args.df))
+        print("=" * 60)
 
-        # Create a test image with known dimensions
-        h, w = 1080, 1920  # 16:9 aspect ratio
-        test_image = np.zeros((h, w, 3), dtype=np.uint8)
+        # If no image provided, create a synthetic test
+        if args.image is None or not os.path.exists(args.image):
+            print("\nNo valid image provided, creating synthetic test image...")
 
-        # Add some pattern to make it interesting
-        for i in range(0, h, 60):
-            test_image[i : i + 30, :, 0] = 200  # Red stripes
-        for j in range(0, w, 80):
-            test_image[:, j : j + 40, 1] = 150  # Green stripes
-        test_image[:, :, 2] = 100  # Blue channel
+            # Create a test image with known dimensions
+            h, w = 1080, 1920  # 16:9 aspect ratio
+            test_image = np.zeros((h, w, 3), dtype=np.uint8)
 
-        # Save synthetic image for testing
-        synth_dir = Path(args.output_dir)
-        synth_dir.mkdir(parents=True, exist_ok=True)
-        synth_path = synth_dir / "synthetic_test.png"
-        Image.fromarray(test_image).save(synth_path)
-        print("Created synthetic image: {}".format(synth_path))
+            # Add some pattern to make it interesting
+            for i in range(0, h, 60):
+                test_image[i : i + 30, :, 0] = 200  # Red stripes
+            for j in range(0, w, 80):
+                test_image[:, j : j + 40, 1] = 150  # Green stripes
+            test_image[:, :, 2] = 100  # Blue channel
 
-        args.image = str(synth_path)
+            # Save synthetic image for testing
+            synth_dir = Path(args.output_dir)
+            synth_dir.mkdir(parents=True, exist_ok=True)
+            synth_path = synth_dir / "synthetic_test.png"
+            Image.fromarray(test_image).save(synth_path)
+            print("Created synthetic image: {}".format(synth_path))
 
-    # Run visualization
-    visualize_preprocessing(args.image, args.output_dir)
+            args.image = str(synth_path)
 
-    print("\n" + "=" * 60)
-    print("Test completed successfully!")
-    print("=" * 60)
+        # Run visualization
+        visualize_preprocessing(args.image, args.output_dir)
+
+        print("\n" + "=" * 60)
+        print("Test completed successfully!")
+        print("=" * 60)
