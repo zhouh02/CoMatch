@@ -19,6 +19,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Dict, List, Tuple
 
 import numpy as np
 from tqdm import tqdm
@@ -97,7 +98,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def load_scene_list(train_list_path: str) -> list[str]:
+def load_scene_list(train_list_path: str) -> List[str]:
     """Load scene names from train_list.txt.
 
     Args:
@@ -114,7 +115,7 @@ def load_scene_list(train_list_path: str) -> list[str]:
 def load_scene_pairs(
     npz_path: str,
     min_overlap: float = 0.1,
-) -> tuple[str, list[tuple], list[float]]:
+) -> Tuple[str, List, List[float]]:
     """Load pair_infos from a scene_info npz file.
 
     Args:
@@ -150,7 +151,7 @@ def export_pairs(
     scene_limit: int = -1,
     shuffle: bool = False,
     seed: int = 0,
-) -> dict:
+) -> Dict:
     """Export MegaDepth pairs to txt and jsonl files.
 
     Args:
@@ -176,9 +177,9 @@ def export_pairs(
     if scene_limit > 0:
         scene_names = scene_names[:scene_limit]
 
-    print(f"Loaded {len(scene_names)} scenes from train_list.txt")
+    print("Loaded {} scenes from train_list.txt".format(len(scene_names)))
     if scene_limit > 0:
-        print(f"  (limited to first {scene_limit} scenes)")
+        print("  (limited to first {} scenes)".format(scene_limit))
 
     # Collect all pairs from all scenes
     all_pairs = []  # List of dicts with pair info
@@ -186,9 +187,9 @@ def export_pairs(
 
     print("\nReading scene_info npz files...")
     for scene_name in tqdm(scene_names, desc="Loading scenes"):
-        npz_path = npz_root / f"{scene_name}.npz"
+        npz_path = npz_root / "{}.npz".format(scene_name)
         if not npz_path.exists():
-            tqdm.write(f"Warning: {npz_path} not found, skipping")
+            tqdm.write("Warning: {} not found, skipping".format(npz_path))
             continue
 
         try:
@@ -210,11 +211,11 @@ def export_pairs(
 
                 # Check if images exist
                 if not full_img0.exists():
-                    print(f"Warning: Image not found: {full_img0}")
+                    print("Warning: Image not found: {}".format(full_img0))
                     skipped += 1
                     continue
                 if not full_img1.exists():
-                    print(f"Warning: Image not found: {full_img1}")
+                    print("Warning: Image not found: {}".format(full_img1))
                     skipped += 1
                     continue
 
@@ -233,13 +234,13 @@ def export_pairs(
                     }
                 )
         except Exception as e:
-            tqdm.write(f"Error loading {npz_path}: {e}")
+            tqdm.write("Error loading {}: {}".format(npz_path, e))
             continue
 
     total_pairs = len(all_pairs)
-    print(f"\nTotal scenes processed: {len(scene_names)}")
-    print(f"Total pairs found: {total_pairs}")
-    print(f"Skipped (images not found): {skipped}")
+    print("\nTotal scenes processed: {}".format(len(scene_names)))
+    print("Total pairs found: {}".format(total_pairs))
+    print("Skipped (images not found): {}".format(skipped))
 
     # Shuffle if requested
     if shuffle:
@@ -247,18 +248,18 @@ def export_pairs(
 
         random.seed(seed)
         random.shuffle(all_pairs)
-        print(f"Shuffled with seed={seed}")
+        print("Shuffled with seed={}".format(seed))
 
     # Limit number of pairs
     if num_pairs > 0 and len(all_pairs) > num_pairs:
         all_pairs = all_pairs[:num_pairs]
-        print(f"Limited to {num_pairs} pairs")
+        print("Limited to {} pairs".format(num_pairs))
 
     # Create output directory
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Write txt file
-    print(f"\nWriting to {output_path}...")
+    print("\nWriting to {}...".format(output_path))
     with open(output_path, "w") as f:
         # Header
         f.write(
@@ -266,36 +267,40 @@ def export_pairs(
         )
         for p in all_pairs:
             f.write(
-                f"{p['pair_id']} {p['scene_id']} {p['pair_idx']} "
-                f"{p['idx0']} {p['idx1']} {p['image0_path']} {p['image1_path']}\n"
+                "{} {} {} {} {} {} {}\n".format(
+                    p["pair_id"], p["scene_id"], p["pair_idx"],
+                    p["idx0"], p["idx1"], p["image0_path"], p["image1_path"]
+                )
             )
 
     # Write jsonl file
     jsonl_path = output_path.with_suffix(".jsonl")
-    print(f"Writing to {jsonl_path}...")
+    print("Writing to {}...".format(jsonl_path))
     with open(jsonl_path, "w") as f:
         for p in all_pairs:
             f.write(json.dumps(p) + "\n")
 
     # Print statistics
-    print(f"\n{'='*60}")
+    print("\n" + "=" * 60)
     print("Export Statistics:")
-    print(f"{'='*60}")
-    print(f"  Total scenes:        {len(scene_names)}")
-    print(f"  Total pairs found:  {total_pairs}")
-    print(f"  Successfully exported: {len(all_pairs)}")
-    print(f"  Skipped (not found): {skipped}")
+    print("=" * 60)
+    print("  Total scenes:        {}".format(len(scene_names)))
+    print("  Total pairs found:  {}".format(total_pairs))
+    print("  Successfully exported: {}".format(len(all_pairs)))
+    print("  Skipped (not found): {}".format(skipped))
     if shuffle:
-        print(f"  Shuffled:            Yes (seed={seed})")
-    print(f"{'='*60}")
+        print("  Shuffled:            Yes (seed={})".format(seed))
+    print("=" * 60)
 
     # Print first 5 examples
     print("\nFirst 5 examples (txt format):")
     print("-" * 60)
     for p in all_pairs[:5]:
         print(
-            f"{p['pair_id']} {p['scene_id']} {p['pair_idx']} "
-            f"{p['idx0']} {p['idx1']} {p['image0_path']} {p['image1_path']}"
+            "{} {} {} {} {} {} {}".format(
+                p["pair_id"], p["scene_id"], p["pair_idx"],
+                p["idx0"], p["idx1"], p["image0_path"], p["image1_path"]
+            )
         )
     print("-" * 60)
 
@@ -321,15 +326,17 @@ def main():
     print("=" * 60)
     print("MegaDepth Pair Exporter for CLIP Pseudo-Labels")
     print("=" * 60)
-    print(f"  npz-root:    {args.npz_root}")
-    print(f"  train-list:  {args.train_list}")
-    print(f"  image-root:  {args.image_root}")
-    print(f"  output:      {args.output}")
-    print(f"  num-pairs:   {args.num_pairs if args.num_pairs > 0 else 'all'}")
-    print(f"  min-overlap: {args.min_overlap}")
-    print(f"  scene-limit: {args.scene_limit if args.scene_limit > 0 else 'all'}")
-    print(f"  shuffle:     {args.shuffle}")
-    print(f"  seed:        {args.seed}")
+    print("  npz-root:    {}".format(args.npz_root))
+    print("  train-list:  {}".format(args.train_list))
+    print("  image-root:  {}".format(args.image_root))
+    print("  output:      {}".format(args.output))
+    num_pairs_str = args.num_pairs if args.num_pairs > 0 else "all"
+    print("  num-pairs:   {}".format(num_pairs_str))
+    print("  min-overlap: {}".format(args.min_overlap))
+    scene_limit_str = args.scene_limit if args.scene_limit > 0 else "all"
+    print("  scene-limit: {}".format(scene_limit_str))
+    print("  shuffle:     {}".format(args.shuffle))
+    print("  seed:        {}".format(args.seed))
     print("=" * 60)
 
     stats = export_pairs(

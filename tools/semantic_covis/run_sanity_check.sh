@@ -9,8 +9,32 @@
 # This script tests the entire tools/semantic_covis pipeline without modifying CoMatch.
 #
 
-set -e  # Exit on error
-# Don't use -u for compatibility with unset variables in some checks
+set -eo pipefail  # Exit on error and undefined variables
+
+# =============================================================================
+# Python Version Check
+# =============================================================================
+
+PYTHON_VERSION=$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:3])))' 2>/dev/null || python -c 'import sys; print(".".join(map(str, sys.version_info[:3])))' 2>/dev/null || echo "UNKNOWN")
+
+echo "========================================"
+echo "Python Version Check"
+echo "========================================"
+echo "Current Python: ${PYTHON_VERSION}"
+echo "当前项目运行在 Python 3.8，因此 tools/semantic_covis 代码必须兼容 Python 3.8。"
+echo ""
+
+# Check if Python version is at least 3.8
+PYTHON_MAJOR=$(echo "${PYTHON_VERSION}" | cut -d. -f1)
+PYTHON_MINOR=$(echo "${PYTHON_VERSION}" | cut -d. -f2)
+
+if [[ "${PYTHON_MAJOR}" -lt 3 ]] || ([[ "${PYTHON_MAJOR}" -eq 3 ]] && [[ "${PYTHON_MINOR}" -lt 8 ]]); then
+    echo "ERROR: Python 3.8 or higher is required. Current version: ${PYTHON_VERSION}"
+    exit 1
+fi
+
+echo "Python version check passed."
+echo ""
 
 # =============================================================================
 # Parse Arguments
@@ -96,9 +120,9 @@ log "----------------------------------------"
 
 log "Current directory: $(pwd)"
 log "Python path: $(which python3 || which python)"
-log "Python version: $(python3 --version 2>/dev/null || python --version 2>/dev/null)"
-log "PyTorch version: $(python3 -c 'import torch; print(torch.__version__)' 2>/dev/null || python -c 'import torch; print(torch.__version__)' 2>/dev/null || echo 'NOT INSTALLED')"
-log "CUDA available: $(python3 -c 'import torch; print(torch.cuda.is_available())' 2>/dev/null || python -c 'import torch; print(torch.cuda.is_available())' 2>/dev/null || echo 'UNKNOWN')"
+log "Python version: ${PYTHON_VERSION}"
+log "PyTorch version: $(python3 -c 'import torch; print(torch.__version__)' 2>/dev/null || echo 'NOT INSTALLED')"
+log "CUDA available: $(python3 -c 'import torch; print(torch.cuda.is_available())' 2>/dev/null || echo 'UNKNOWN')"
 
 # Check transformers
 TRANSFORMERS_VERSION=$(python3 -c 'import transformers; print(transformers.__version__)' 2>/dev/null || echo "NOT INSTALLED")
@@ -124,7 +148,7 @@ SYNTAX_OK=true
 for py_file in "${PY_FILES[@]}"; do
     if [[ -f "$py_file" ]]; then
         filename=$(basename "$py_file")
-        if python3 -m py_compile "$py_file" 2>&1 | tee -a "${LOG_FILE}"; then
+        if python3 -m py_compile "$py_file" 2>&1; then
             log "  [OK] ${filename}"
         else
             log_error "  [FAIL] ${filename}"
@@ -134,7 +158,7 @@ for py_file in "${PY_FILES[@]}"; do
         log_error "  [MISSING] $(basename "$py_file")"
         SYNTAX_OK=false
     fi
-done
+done | tee -a "${LOG_FILE}"
 
 if [[ "$SYNTAX_OK" != "true" ]]; then
     log_error "Syntax check failed!"
@@ -156,7 +180,8 @@ DEBUG_PAIRS="${OUTPUT_DIR}/debug_pairs.txt"
 
 log "Running export_megadepth_pairs.py..."
 
-if python3 "${SCRIPT_DIR}/export_megadepth_pairs.py" \
+# Run export script - if it fails, script exits immediately due to set -e
+python3 "${SCRIPT_DIR}/export_megadepth_pairs.py" \
     --npz-root "${NPZ_ROOT}" \
     --train-list "${TRAIN_LIST}" \
     --image-root "${IMAGE_ROOT}" \
@@ -164,13 +189,19 @@ if python3 "${SCRIPT_DIR}/export_megadepth_pairs.py" \
     --num-pairs "${NUM_PAIRS}" \
     --min-overlap 0.1 \
     --shuffle \
-    --seed "${SEED}" 2>&1 | tee -a "${LOG_FILE}"; then
-    log "  Export completed successfully."
-else
-    log_error "Export failed!"
+    --seed "${SEED}" 2>&1 | tee -a "${LOG_FILE}"
+
+# Check exit status
+PIPE_STATUS=(${PIPESTATUS[@]})
+EXIT_CODE=${PIPE_STATUS[0]}
+
+if [[ ${EXIT_CODE} -ne 0 ]]; then
+    log_error "Export failed with exit code: ${EXIT_CODE}"
+    log_error "Check log file for details: ${LOG_FILE}"
     exit 1
 fi
 
+log "  Export completed successfully."
 log ""
 
 # =============================================================================
@@ -250,26 +281,31 @@ log "----------------------------------------"
 
 log "Testing image_preprocess.py with first image..."
 
-if python3 "${SCRIPT_DIR}/image_preprocess.py" \
+python3 "${SCRIPT_DIR}/image_preprocess.py" \
     --image "${FULL_IMAGE0}" \
-    --output-dir "${OUTPUT_DIR}/preprocess_test" 2>&1 | tee -a "${LOG_FILE}"; then
-    log "  Image preprocessing (image 0) completed."
-else
-    log_error "Image preprocessing (image 0) failed!"
+    --output-dir "${OUTPUT_DIR}/preprocess_test" 2>&1 | tee -a "${LOG_FILE}"
+
+EXIT_CODE=${PIPESTATUS[0]}
+if [[ ${EXIT_CODE} -ne 0 ]]; then
+    log_error "Image preprocessing (image 0) failed with exit code: ${EXIT_CODE}"
     exit 1
 fi
+
+log "  Image preprocessing (image 0) completed."
 
 log "Testing image_preprocess.py with second image..."
 
-if python3 "${SCRIPT_DIR}/image_preprocess.py" \
+python3 "${SCRIPT_DIR}/image_preprocess.py" \
     --image "${FULL_IMAGE1}" \
-    --output-dir "${OUTPUT_DIR}/preprocess_test" 2>&1 | tee -a "${LOG_FILE}"; then
-    log "  Image preprocessing (image 1) completed."
-else
-    log_error "Image preprocessing (image 1) failed!"
+    --output-dir "${OUTPUT_DIR}/preprocess_test" 2>&1 | tee -a "${LOG_FILE}"
+
+EXIT_CODE=${PIPESTATUS[0]}
+if [[ ${EXIT_CODE} -ne 0 ]]; then
+    log_error "Image preprocessing (image 1) failed with exit code: ${EXIT_CODE}"
     exit 1
 fi
 
+log "  Image preprocessing (image 1) completed."
 log ""
 
 # =============================================================================
@@ -287,8 +323,9 @@ CLIP_OUTPUT=$("${SCRIPT_DIR}/clip_feature_extractor.py" \
     --model-name "${MODEL_NAME}" \
     --device "${DEVICE}" 2>&1 | tee -a "${LOG_FILE}")
 
-if [[ $? -ne 0 ]]; then
-    log_error "CLIP feature extraction (image 0) failed!"
+EXIT_CODE=${PIPESTATUS[0]}
+if [[ ${EXIT_CODE} -ne 0 ]]; then
+    log_error "CLIP feature extraction (image 0) failed with exit code: ${EXIT_CODE}"
     exit 1
 fi
 
@@ -315,8 +352,9 @@ CLIP_OUTPUT2=$("${SCRIPT_DIR}/clip_feature_extractor.py" \
     --model-name "${MODEL_NAME}" \
     --device "${DEVICE}" 2>&1 | tee -a "${LOG_FILE}")
 
-if [[ $? -ne 0 ]]; then
-    log_error "CLIP feature extraction (image 1) failed!"
+EXIT_CODE=${PIPESTATUS[0]}
+if [[ ${EXIT_CODE} -ne 0 ]]; then
+    log_error "CLIP feature extraction (image 1) failed with exit code: ${EXIT_CODE}"
     exit 1
 fi
 

@@ -12,6 +12,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
+from typing import Any, Dict, Optional, Tuple, Union
 
 import cv2
 import numpy as np
@@ -23,7 +24,7 @@ from PIL import Image
 # =============================================================================
 
 
-def get_resized_wh(w: int, h: int, resize: int | None = None) -> tuple[int, int]:
+def get_resized_wh(w: int, h: int, resize: Optional[int] = None) -> Tuple[int, int]:
     """Resize image so that the longer edge equals `resize`.
 
     Identical to src/utils/dataset.py::get_resized_wh()
@@ -49,7 +50,7 @@ def get_resized_wh(w: int, h: int, resize: int | None = None) -> tuple[int, int]
     return w_new, h_new
 
 
-def get_divisible_wh(w: int, h: int, df: int | None = None) -> tuple[int, int]:
+def get_divisible_wh(w: int, h: int, df: Optional[int] = None) -> Tuple[int, int]:
     """Round dimensions down to be divisible by `df`.
 
     Identical to src/utils/dataset.py::get_divisible_wh()
@@ -76,7 +77,7 @@ def get_divisible_wh(w: int, h: int, df: int | None = None) -> tuple[int, int]:
 
 def pad_bottom_right(
     inp: np.ndarray, pad_size: int, ret_mask: bool = False
-) -> tuple[np.ndarray, np.ndarray | None]:
+) -> Tuple[np.ndarray, Optional[np.ndarray]]:
     """Zero-pad image to square shape at bottom-right.
 
     Identical to src/utils/dataset.py::pad_bottom_right()
@@ -120,12 +121,12 @@ def pad_bottom_right(
             mask[:, : inp.shape[0], : inp.shape[1]] = True
 
     else:
-        raise NotImplementedError(f"Unsupported input ndim: {inp.ndim}")
+        raise NotImplementedError("Unsupported input ndim: {}".format(inp.ndim))
 
     return padded, mask
 
 
-def read_rgb_image(path: str | Path) -> np.ndarray:
+def read_rgb_image(path: Union[str, Path]) -> np.ndarray:
     """Read an image as RGB numpy array.
 
     Args:
@@ -149,13 +150,13 @@ def read_rgb_image(path: str | Path) -> np.ndarray:
             image = cv2.cvtColor(data, cv2.COLOR_BGR2RGB)
         except ImportError:
             raise RuntimeError(
-                f"Cannot load S3 image: {path}. "
-                "Make sure S3 client is configured."
+                "Cannot load S3 image: {}. "
+                "Make sure S3 client is configured.".format(path)
             )
     else:
         image = cv2.imread(path, cv2.IMREAD_COLOR)
         if image is None:
-            raise FileNotFoundError(f"Cannot read image: {path}")
+            raise FileNotFoundError("Cannot read image: {}".format(path))
         # BGR to RGB
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
@@ -168,12 +169,12 @@ def read_rgb_image(path: str | Path) -> np.ndarray:
 
 
 def read_rgb_for_clip_and_comatch(
-    image_path: str | Path,
+    image_path: Union[str, Path],
     long_edge: int = 832,
     df: int = 8,
     pad_to_square: bool = True,
     return_pil: bool = False,
-) -> dict:
+) -> Dict[str, Any]:
     """Read and preprocess an RGB image using CoMatch style.
 
     This function replicates CoMatch's image preprocessing logic but
@@ -284,8 +285,8 @@ def apply_valid_mask_to_heatmap(
 
 def resize_heatmap_to_grid(
     heatmap: np.ndarray,
-    source_hw: tuple[int, int],
-    target_hw: tuple[int, int],
+    source_hw: Tuple[int, int],
+    target_hw: Tuple[int, int],
     interpolation: int = cv2.INTER_LINEAR,
 ) -> np.ndarray:
     """Resize a heatmap from source grid to target grid.
@@ -312,7 +313,7 @@ def resize_heatmap_to_grid(
             )
         return np.stack(resized, axis=0)
     else:
-        raise ValueError(f"Invalid heatmap ndim: {heatmap.ndim}")
+        raise ValueError("Invalid heatmap ndim: {}".format(heatmap.ndim))
 
 
 # =============================================================================
@@ -333,7 +334,7 @@ def visualize_preprocessing(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Processing: {image_path}")
+    print("Processing: {}".format(image_path))
 
     # Preprocess
     result = read_rgb_for_clip_and_comatch(
@@ -345,30 +346,30 @@ def visualize_preprocessing(
 
     # Print info
     print("\nPreprocessing result:")
-    print(f"  Original size: {result['original_hw']}")
-    print(f"  Resized size:  {result['resized_hw']}")
-    print(f"  Valid size:    {result['valid_hw']}")
-    print(f"  Pad size:      {result['pad_size']}")
-    print(f"  Scale:         {result['scale']}")
-    print(f"  Image shape:   {result['image'].shape}")
-    print(f"  Mask shape:    {result['valid_mask'].shape}")
+    print("  Original size: {}".format(result["original_hw"]))
+    print("  Resized size:  {}".format(result["resized_hw"]))
+    print("  Valid size:    {}".format(result["valid_hw"]))
+    print("  Pad size:      {}".format(result["pad_size"]))
+    print("  Scale:         {}".format(result["scale"]))
+    print("  Image shape:   {}".format(result["image"].shape))
+    print("  Mask shape:    {}".format(result["valid_mask"].shape))
 
     # Save visualizations
     base_name = Path(image_path).stem
 
     # Save padded RGB image
-    rgb_path = output_dir / f"{base_name}_rgb_padded.png"
+    rgb_path = output_dir / "{}_rgb_padded.png".format(base_name)
     if isinstance(result["image"], np.ndarray):
         Image.fromarray(result["image"].astype(np.uint8)).save(rgb_path)
     else:
         result["image"].save(rgb_path)
-    print(f"\nSaved RGB: {rgb_path}")
+    print("\nSaved RGB: {}".format(rgb_path))
 
     # Save valid mask
     mask = result["valid_mask"].astype(np.uint8) * 255
-    mask_path = output_dir / f"{base_name}_valid_mask.png"
+    mask_path = output_dir / "{}_valid_mask.png".format(base_name)
     Image.fromarray(mask).save(mask_path)
-    print(f"Saved mask: {mask_path}")
+    print("Saved mask: {}".format(mask_path))
 
     # Create side-by-side visualization
     rgb = np.array(result["image"])
@@ -378,14 +379,14 @@ def visualize_preprocessing(
     mask_vis[~result["valid_mask"]] = [255, 0, 0]  # Red for padding
 
     blended = cv2.addWeighted(rgb, 0.7, mask_vis, 0.3, 0)
-    blend_path = output_dir / f"{base_name}_overlay.png"
+    blend_path = output_dir / "{}_overlay.png".format(base_name)
     Image.fromarray(blended).save(blend_path)
-    print(f"Saved overlay: {blend_path}")
+    print("Saved overlay: {}".format(blend_path))
 
     # Save metadata as JSON
     import json
 
-    meta_path = output_dir / f"{base_name}_metadata.json"
+    meta_path = output_dir / "{}_metadata.json".format(base_name)
     meta = {
         "original_hw": result["original_hw"],
         "resized_hw": result["resized_hw"],
@@ -395,7 +396,7 @@ def visualize_preprocessing(
     }
     with open(meta_path, "w") as f:
         json.dump(meta, f, indent=2)
-    print(f"Saved metadata: {meta_path}")
+    print("Saved metadata: {}".format(meta_path))
 
 
 if __name__ == "__main__":
@@ -431,8 +432,8 @@ if __name__ == "__main__":
     print("=" * 60)
     print("Image Preprocessing Test")
     print("=" * 60)
-    print(f"  Long edge:  {args.long_edge}")
-    print(f"  Divisible by: {args.df}")
+    print("  Long edge:  {}".format(args.long_edge))
+    print("  Divisible by: {}".format(args.df))
     print("=" * 60)
 
     # If no image provided, create a synthetic test
@@ -455,7 +456,7 @@ if __name__ == "__main__":
         synth_dir.mkdir(parents=True, exist_ok=True)
         synth_path = synth_dir / "synthetic_test.png"
         Image.fromarray(test_image).save(synth_path)
-        print(f"Created synthetic image: {synth_path}")
+        print("Created synthetic image: {}".format(synth_path))
 
         args.image = str(synth_path)
 

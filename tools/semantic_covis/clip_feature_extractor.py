@@ -30,6 +30,7 @@ Preprocessing pipeline:
 import os
 import sys
 from pathlib import Path
+from typing import Any, Dict, List, Tuple, Union
 
 import numpy as np
 import torch
@@ -47,9 +48,11 @@ for pkg in _required_packages:
 if _missing_packages:
     print(
         "Error: Missing required packages. Please install them with:\n"
-        f"  pip install {' '.join(_missing_packages)}\n"
+        "  pip install {}\n"
         "Full installation:\n"
-        "  pip install transformers pillow tqdm matplotlib opencv-python torch",
+        "  pip install transformers pillow tqdm matplotlib opencv-python torch".format(
+            " ".join(_missing_packages)
+        ),
         file=sys.stderr,
     )
     sys.exit(1)
@@ -93,7 +96,7 @@ class CLIPFeatureExtractor:
     def __init__(
         self,
         model_name: str = "openai/clip-vit-large-patch14-336",
-        device: str | None = None,
+        device: Optional[str] = None,
         dtype: torch.dtype = torch.float32,
         long_edge: int = 832,
     ):
@@ -115,9 +118,9 @@ class CLIPFeatureExtractor:
         else:
             self.device = device
 
-        print(f"Loading CLIP model: {model_name}")
-        print(f"Device: {self.device}")
-        print(f"CoMatch long_edge: {self.long_edge}")
+        print("Loading CLIP model: {}".format(model_name))
+        print("Device: {}".format(self.device))
+        print("CoMatch long_edge: {}".format(self.long_edge))
 
         # Load model
         self.model = CLIPVisionModel.from_pretrained(model_name)
@@ -139,9 +142,9 @@ class CLIPFeatureExtractor:
         # Determine patch grid size from model config
         self._parse_grid_size()
 
-        print(f"CLIP input image size: {self.image_size}")
-        print(f"CLIP patch size: {self.patch_size}")
-        print(f"CLIP patch grid: {self.grid_size}")
+        print("CLIP input image size: {}".format(self.image_size))
+        print("CLIP patch size: {}".format(self.patch_size))
+        print("CLIP patch grid: {}".format(self.grid_size))
 
     def _parse_grid_size(self) -> None:
         """Parse patch grid size from model configuration."""
@@ -172,10 +175,10 @@ class CLIPFeatureExtractor:
     @torch.no_grad()
     def extract(
         self,
-        image: np.ndarray | str | Path | Image.Image,
+        image: Union[np.ndarray, str, Path, Image.Image],
         return_dict: bool = True,
         return_numpy: bool = True,
-    ) -> dict | tuple:
+    ) -> Union[Dict[str, Any], Tuple[np.ndarray, Tuple[int, int]]]:
         """Extract CLIP patch tokens from an image.
 
         Preprocessing pipeline:
@@ -216,7 +219,7 @@ class CLIPFeatureExtractor:
             )
         elif isinstance(image, Image.Image):
             # Save PIL image temporarily
-            tmp_path = Path("/tmp") / f"clip_temp_{id(image)}.png"
+            tmp_path = Path("/tmp") / "clip_temp_{}.png".format(id(image))
             image.save(str(tmp_path))
             preprocess_result = read_rgb_for_clip_and_comatch(
                 str(tmp_path),
@@ -229,7 +232,7 @@ class CLIPFeatureExtractor:
         else:
             # numpy array - convert to PIL then preprocess
             pil_image = Image.fromarray(image.astype(np.uint8))
-            tmp_path = Path("/tmp") / f"clip_temp_{id(image)}.png"
+            tmp_path = Path("/tmp") / "clip_temp_{}.png".format(id(image))
             pil_image.save(str(tmp_path))
             preprocess_result = read_rgb_for_clip_and_comatch(
                 str(tmp_path),
@@ -298,10 +301,10 @@ class CLIPFeatureExtractor:
     @torch.no_grad()
     def extract_batch(
         self,
-        images: list[np.ndarray | str | Path | Image.Image],
+        images: List[Union[np.ndarray, str, Path, Image.Image]],
         batch_size: int = 8,
         return_dict: bool = False,
-    ) -> tuple:
+    ) -> Union[Dict[str, Any], Tuple[np.ndarray, List[Tuple[int, int]]]]:
         """Extract CLIP features from a batch of images.
 
         Args:
@@ -367,8 +370,8 @@ class CLIPFeatureExtractor:
 
 def resize_heatmap_to_coarse(
     heatmap: np.ndarray,
-    source_grid: tuple[int, int],
-    target_grid: tuple[int, int] = (104, 104),
+    source_grid: Tuple[int, int],
+    target_grid: Tuple[int, int] = (104, 104),
 ) -> np.ndarray:
     """Resize a heatmap from CLIP grid to CoMatch coarse grid.
 
@@ -395,7 +398,7 @@ def resize_heatmap_to_coarse(
             )
         return np.stack(resized, axis=0)
     else:
-        raise ValueError(f"Invalid heatmap ndim: {heatmap.ndim}")
+        raise ValueError("Invalid heatmap ndim: {}".format(heatmap.ndim))
 
 
 def apply_valid_mask(
@@ -461,9 +464,9 @@ if __name__ == "__main__":
     print("=" * 60)
     print("CLIP Feature Extractor Test")
     print("=" * 60)
-    print(f"  Model:     {args.model_name}")
-    print(f"  Device:    {args.device or 'auto'}")
-    print(f"  Long edge: {args.long_edge}")
+    print("  Model:     {}".format(args.model_name))
+    print("  Device:    {}".format(args.device or "auto"))
+    print("  Long edge: {}".format(args.long_edge))
     print("=" * 60)
 
     # Initialize extractor
@@ -475,7 +478,7 @@ if __name__ == "__main__":
 
     # Prepare test image
     if args.image and os.path.exists(args.image):
-        print(f"\nUsing test image: {args.image}")
+        print("\nUsing test image: {}".format(args.image))
         image = args.image
     else:
         # Create synthetic test image with known dimensions
@@ -499,30 +502,32 @@ if __name__ == "__main__":
     pf = result["patch_features"]
     pp = result["preprocess"]
 
-    print(f"  patch_features.shape: {pf.shape}")
-    print(f"    - N (num patches):  {pf.shape[0]}")
-    print(f"    - D (feature dim):  {pf.shape[1]}")
-    print(f"  grid_size:            {result['grid_size']}")
+    print("  patch_features.shape: {}".format(pf.shape))
+    print("    - N (num patches):  {}".format(pf.shape[0]))
+    print("    - D (feature dim):  {}".format(pf.shape[1]))
+    print("  grid_size:            {}".format(result["grid_size"]))
 
-    print(f"\n  Preprocessing info:")
-    print(f"    - original_hw:     {pp['original_hw']}")
-    print(f"    - resized_hw:       {pp['resized_hw']}")
-    print(f"    - pad_size:         {pp['pad_size']}")
-    print(f"    - scale:            {pp['scale']}")
+    print("\n  Preprocessing info:")
+    print("    - original_hw:     {}".format(pp["original_hw"]))
+    print("    - resized_hw:       {}".format(pp["resized_hw"]))
+    print("    - pad_size:         {}".format(pp["pad_size"]))
+    print("    - scale:            {}".format(pp["scale"]))
 
     valid_mask = pp["valid_mask"]
     valid_ratio = valid_mask.sum() / valid_mask.size
-    print(f"\n  valid_mask:")
-    print(f"    - shape:            {valid_mask.shape}")
-    print(f"    - valid_ratio:      {valid_ratio:.4f} ({valid_mask.sum()} / {valid_mask.size})")
+    print("\n  valid_mask:")
+    print("    - shape:            {}".format(valid_mask.shape))
+    print("    - valid_ratio:      {:.4f} ({} / {})".format(
+        valid_ratio, valid_mask.sum(), valid_mask.size
+    ))
 
     # Also test legacy tuple return
     print("\n" + "-" * 60)
     print("Legacy tuple return test:")
     print("-" * 60)
     pf_tuple, gs_tuple = extractor.extract(image, return_dict=False)
-    print(f"  patch_features.shape: {pf_tuple.shape}")
-    print(f"  grid_size:            {gs_tuple}")
+    print("  patch_features.shape: {}".format(pf_tuple.shape))
+    print("  grid_size:            {}".format(gs_tuple))
 
     # Test heatmap resize utility
     print("\n" + "-" * 60)
@@ -530,7 +535,7 @@ if __name__ == "__main__":
     print("-" * 60)
     dummy_heatmap = np.random.rand(*result["grid_size"]).astype(np.float32)
     resized = resize_heatmap_to_coarse(dummy_heatmap, result["grid_size"])
-    print(f"  Source: {dummy_heatmap.shape} -> Target: {resized.shape}")
+    print("  Source: {} -> Target: {}".format(dummy_heatmap.shape, resized.shape))
 
     # Cleanup
     extractor.close()
