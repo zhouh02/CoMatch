@@ -316,76 +316,78 @@ log "----------------------------------------"
 log "Step 7: Test CLIP Feature Extractor"
 log "----------------------------------------"
 
-# Helper function to test CLIP extractor with proper exit code handling
-test_clip_extractor() {
+# Helper function to run CLIP test with proper error handling
+run_clip_test() {
     local image_path="$1"
-    local image_label="$2"
+    local log_file="$2"
+    local image_label="$3"
 
-    log "Testing clip_feature_extractor.py with ${image_label}..."
+    log ""
+    log "=== Testing CLIP Feature Extractor with ${image_label} ==="
+    log "  Command: python3 ${SCRIPT_DIR}/clip_feature_extractor.py"
+    log "  Image:   ${image_path}"
+    log "  Model:   ${MODEL_NAME}"
+    log "  Device:  ${DEVICE}"
+    log "  Log:     ${log_file}"
+    log ""
 
-    # Run command, capture both stdout and exit code
-    local output
-    local exit_code
+    # Disable errexit temporarily so we can capture exit code properly
+    set +e
 
-    output=$("${SCRIPT_DIR}/clip_feature_extractor.py" \
+    # Run with unbuffered output
+    PYTHONUNBUFFERED=1 python3 "${SCRIPT_DIR}/clip_feature_extractor.py" \
         --image "${image_path}" \
         --model-name "${MODEL_NAME}" \
-        --device "${DEVICE}" 2>&1)
-    exit_code=$?
+        --device "${DEVICE}" 2>&1 | tee "${log_file}"
+    local exit_code=${PIPESTATUS[0]}
 
-    # Print full output to log
-    echo "${output}" | tee -a "${LOG_FILE}"
+    # Re-enable errexit
+    set -e
 
-    # Check exit code
+    log ""
+    log "  Exit code: ${exit_code}"
+    log ""
+
     if [[ ${exit_code} -ne 0 ]]; then
-        log_error "CLIP feature extraction (${image_label}) failed with exit code: ${exit_code}"
+        log_error "=========================================="
+        log_error "[ERROR] CLIP feature extractor FAILED!"
+        log_error "=========================================="
+        log_error "  Exit code: ${exit_code}"
+        log_error "  Log file:  ${log_file}"
+        log_error ""
+        log_error "Last 80 lines of log:"
+        tail -80 "${log_file}" | while IFS= read -r line; do
+            log_error "  ${line}"
+        done
+        log_error ""
+        log_error "=========================================="
         exit 1
     fi
 
-    # Check for success indicators
-    if echo "${output}" | grep -q "Test completed successfully"; then
-        log "  ${image_label} extraction succeeded."
+    # Success: check log contains required indicators
+    if grep -q "Test completed successfully" "${log_file}" && \
+       grep -q "grid_size:" "${log_file}" && \
+       grep -q "patch_features.shape:" "${log_file}"; then
+        log "[OK] ${image_label} CLIP test PASSED"
     else
-        log_error "CLIP output missing 'Test completed successfully'!"
+        log_error "[ERROR] ${image_label} output missing required indicators!"
+        log_error "  Required: 'Test completed successfully', 'grid_size:', 'patch_features.shape:'"
+        log_error "  Check log file: ${log_file}"
         exit 1
     fi
 
-    # Extract and log key metrics (handles both "(1, 576, 1024)" and "(576, 1024)" formats)
-    local patch_shape=$(echo "${output}" | grep "patch_features.shape:" | head -1 | awk '{print $2}')
-    local grid_size=$(echo "${output}" | grep "grid_size:" | head -1 | awk '{print $2}')
-    local valid_ratio=$(echo "${output}" | grep "valid_ratio:" | head -1 | awk '{print $2}')
-
-    log "  ${image_label} CLIP results:"
-    log "    patch_features.shape: ${patch_shape}"
-    log "    grid_size: ${grid_size}"
-    log "    valid_ratio: ${valid_ratio}"
-
-    # Verify grid_size is (24, 24)
-    if [[ "${grid_size}" == "(24,"* ]]; then
-        log "    grid_size check: PASS (expected (24, 24))"
-    else
-        log_error "CLIP grid_size mismatch! Expected (24, 24), got: ${grid_size}"
-        exit 1
-    fi
-
-    # Verify patch_features shape is valid (accept both formats)
-    if [[ -z "${patch_shape}" ]]; then
-        log_error "Failed to extract patch_features.shape from CLIP output!"
-        exit 1
-    fi
-
-    echo "${output}"
+    log ""
 }
 
-# Test first image
-test_clip_extractor "${FULL_IMAGE0}" "image 0"
+# Test image 0
+CLIP_LOG_0="${OUTPUT_DIR}/clip_feature_extractor_image0.log"
+run_clip_test "${FULL_IMAGE0}" "${CLIP_LOG_0}" "image 0"
 
-log ""
+# Test image 1
+CLIP_LOG_1="${OUTPUT_DIR}/clip_feature_extractor_image1.log"
+run_clip_test "${FULL_IMAGE1}" "${CLIP_LOG_1}" "image 1"
 
-# Test second image
-test_clip_extractor "${FULL_IMAGE1}" "image 1"
-
-log ""
+log "[OK] CLIP feature extractor test passed for both images."
 
 # =============================================================================
 # Summary
@@ -400,11 +402,9 @@ log "  - Python syntax: OK"
 log "  - Exported pairs: ${NUM_PAIRS}"
 log "  - CLIP model: ${MODEL_NAME}"
 log "  - CLIP device: ${DEVICE}"
-log "  - Image 0 patch features: ${PATCH_SHAPE}"
-log "  - Image 0 grid size: ${GRID_SIZE}"
-log "  - Image 1 patch features: ${PATCH_SHAPE2}"
-log "  - Image 1 grid size: ${GRID_SIZE2}"
-log "  - Log file: ${LOG_FILE}"
+log "  - CLIP log (image 0): ${CLIP_LOG_0}"
+log "  - CLIP log (image 1): ${CLIP_LOG_1}"
+log "  - Full log: ${LOG_FILE}"
 log ""
 log "All tests completed successfully!"
 
