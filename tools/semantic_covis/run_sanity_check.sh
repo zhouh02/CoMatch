@@ -316,59 +316,74 @@ log "----------------------------------------"
 log "Step 7: Test CLIP Feature Extractor"
 log "----------------------------------------"
 
-log "Testing clip_feature_extractor.py with first image..."
+# Helper function to test CLIP extractor with proper exit code handling
+test_clip_extractor() {
+    local image_path="$1"
+    local image_label="$2"
 
-CLIP_OUTPUT=$("${SCRIPT_DIR}/clip_feature_extractor.py" \
-    --image "${FULL_IMAGE0}" \
-    --model-name "${MODEL_NAME}" \
-    --device "${DEVICE}" 2>&1 | tee -a "${LOG_FILE}")
+    log "Testing clip_feature_extractor.py with ${image_label}..."
 
-EXIT_CODE=${PIPESTATUS[0]}
-if [[ ${EXIT_CODE} -ne 0 ]]; then
-    log_error "CLIP feature extraction (image 0) failed with exit code: ${EXIT_CODE}"
-    exit 1
-fi
+    # Run command, capture both stdout and exit code
+    local output
+    local exit_code
 
-# Extract key metrics
-PATCH_SHAPE=$(echo "$CLIP_OUTPUT" | grep "patch_features.shape:" | head -1 | awk '{print $2}')
-GRID_SIZE=$(echo "$CLIP_OUTPUT" | grep "grid_size:" | head -1 | awk '{print $2}')
-VALID_RATIO=$(echo "$CLIP_OUTPUT" | grep "valid_ratio:" | head -1 | awk '{print $2}')
+    output=$("${SCRIPT_DIR}/clip_feature_extractor.py" \
+        --image "${image_path}" \
+        --model-name "${MODEL_NAME}" \
+        --device "${DEVICE}" 2>&1)
+    exit_code=$?
 
-log "Image 0 CLIP results:"
-log "  patch_features.shape: ${PATCH_SHAPE}"
-log "  grid_size: ${GRID_SIZE}"
-log "  valid_ratio: ${VALID_RATIO}"
+    # Print full output to log
+    echo "${output}" | tee -a "${LOG_FILE}"
 
-if [[ -z "$PATCH_SHAPE" || -z "$GRID_SIZE" ]]; then
-    log_error "Failed to extract CLIP output metrics!"
-    exit 1
-fi
+    # Check exit code
+    if [[ ${exit_code} -ne 0 ]]; then
+        log_error "CLIP feature extraction (${image_label}) failed with exit code: ${exit_code}"
+        exit 1
+    fi
+
+    # Check for success indicators
+    if echo "${output}" | grep -q "Test completed successfully"; then
+        log "  ${image_label} extraction succeeded."
+    else
+        log_error "CLIP output missing 'Test completed successfully'!"
+        exit 1
+    fi
+
+    # Extract and log key metrics (handles both "(1, 576, 1024)" and "(576, 1024)" formats)
+    local patch_shape=$(echo "${output}" | grep "patch_features.shape:" | head -1 | awk '{print $2}')
+    local grid_size=$(echo "${output}" | grep "grid_size:" | head -1 | awk '{print $2}')
+    local valid_ratio=$(echo "${output}" | grep "valid_ratio:" | head -1 | awk '{print $2}')
+
+    log "  ${image_label} CLIP results:"
+    log "    patch_features.shape: ${patch_shape}"
+    log "    grid_size: ${grid_size}"
+    log "    valid_ratio: ${valid_ratio}"
+
+    # Verify grid_size is (24, 24)
+    if [[ "${grid_size}" == "(24,"* ]]; then
+        log "    grid_size check: PASS (expected (24, 24))"
+    else
+        log_error "CLIP grid_size mismatch! Expected (24, 24), got: ${grid_size}"
+        exit 1
+    fi
+
+    # Verify patch_features shape is valid (accept both formats)
+    if [[ -z "${patch_shape}" ]]; then
+        log_error "Failed to extract patch_features.shape from CLIP output!"
+        exit 1
+    fi
+
+    echo "${output}"
+}
+
+# Test first image
+test_clip_extractor "${FULL_IMAGE0}" "image 0"
 
 log ""
-log "Testing clip_feature_extractor.py with second image..."
 
-CLIP_OUTPUT2=$("${SCRIPT_DIR}/clip_feature_extractor.py" \
-    --image "${FULL_IMAGE1}" \
-    --model-name "${MODEL_NAME}" \
-    --device "${DEVICE}" 2>&1 | tee -a "${LOG_FILE}")
-
-EXIT_CODE=${PIPESTATUS[0]}
-if [[ ${EXIT_CODE} -ne 0 ]]; then
-    log_error "CLIP feature extraction (image 1) failed with exit code: ${EXIT_CODE}"
-    exit 1
-fi
-
-PATCH_SHAPE2=$(echo "$CLIP_OUTPUT2" | grep "patch_features.shape:" | head -1 | awk '{print $2}')
-GRID_SIZE2=$(echo "$CLIP_OUTPUT2" | grep "grid_size:" | head -1 | awk '{print $2}')
-
-log "Image 1 CLIP results:"
-log "  patch_features.shape: ${PATCH_SHAPE2}"
-log "  grid_size: ${GRID_SIZE2}"
-
-if [[ -z "$PATCH_SHAPE2" || -z "$GRID_SIZE2" ]]; then
-    log_error "Failed to extract CLIP output metrics for image 1!"
-    exit 1
-fi
+# Test second image
+test_clip_extractor "${FULL_IMAGE1}" "image 1"
 
 log ""
 
