@@ -73,6 +73,17 @@ def parse_args():
     parser.add_argument("--temperature", type=float, default=0.07)
     parser.add_argument("--q-low", type=float, default=40)
     parser.add_argument("--q-high", type=float, default=85)
+    parser.add_argument(
+        "--mode", type=str, default="v1", choices=["v1", "v2"],
+        help="Covisibility estimator mode: v1 (original) or v2 (enhanced)",
+    )
+    parser.add_argument(
+        "--specificity-gamma", type=float, default=1.5,
+        help="Gamma for specificity power (v2 only, default: 1.5)",
+    )
+    parser.add_argument("--k-margin", type=int, default=10)
+    parser.add_argument("--q-margin-low", type=float, default=30)
+    parser.add_argument("--q-margin-high", type=float, default=80)
     parser.add_argument("--max-pairs", type=int, default=-1)
     parser.add_argument("--overwrite", action="store_true",
                         help="Overwrite existing npz files")
@@ -151,10 +162,15 @@ def process_pair(
     output_dir,      # type: Path
     extractor,       # type: CLIPFeatureExtractor
     coarse_scale,    # type: int
+    mode,            # type: str
     topk,            # type: int
     temperature,     # type: float
     q_low,           # type: float
     q_high,          # type: float
+    specificity_gamma,  # type: float
+    k_margin,        # type: int
+    q_margin_low,    # type: float
+    q_margin_high,   # type: float
     save_debug,      # type: bool
     overwrite,       # type: bool
 ):
@@ -201,10 +217,15 @@ def process_pair(
     # Compute semantic covisibility on CLIP grid
     covis_result = compute_semantic_covisibility(
         pf0, pf1, grid0, grid1,
+        mode=mode,
         topk=topk,
         temperature=temperature,
         q_low=q_low,
         q_high=q_high,
+        specificity_gamma=specificity_gamma,
+        k_margin=k_margin,
+        q_margin_low=q_margin_low,
+        q_margin_high=q_margin_high,
     )
 
     # Resize to CoMatch coarse grid
@@ -322,6 +343,9 @@ def main():
     print("  temperature:  {}".format(args.temperature))
     print("  q-low:        {}".format(args.q_low))
     print("  q-high:       {}".format(args.q_high))
+    print("  mode:         {}".format(args.mode))
+    print("  gamma:        {}".format(args.specificity_gamma))
+    print("  k-margin:     {}".format(args.k_margin))
     print("  max-pairs:    {}".format(args.max_pairs if args.max_pairs > 0 else "all"))
     print("  overwrite:    {}".format(args.overwrite))
     print("  save-debug:   {}".format(args.save_debug))
@@ -385,10 +409,15 @@ def main():
                 output_dir=output_dir,
                 extractor=extractor,
                 coarse_scale=args.coarse_scale,
+                mode=args.mode,
                 topk=args.topk,
                 temperature=args.temperature,
                 q_low=args.q_low,
                 q_high=args.q_high,
+                specificity_gamma=args.specificity_gamma,
+                k_margin=args.k_margin,
+                q_margin_low=args.q_margin_low,
+                q_margin_high=args.q_margin_high,
                 save_debug=args.save_debug,
                 overwrite=args.overwrite,
             )

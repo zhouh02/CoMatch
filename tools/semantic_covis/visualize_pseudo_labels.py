@@ -115,7 +115,7 @@ def add_text_annotations(img, pair_id, stats):
     Args:
         img: RGB image [H, W, 3]
         pair_id: Pair identifier
-        stats: Dict with y_mean, y_max, conf_mean, conf_max, high_ratio
+        stats: Dict with stat keys
 
     Returns:
         Annotated image
@@ -131,11 +131,14 @@ def add_text_annotations(img, pair_id, stats):
 
     lines = [
         pair_id[:24],
-        "y_mean={:.3f} y_max={:.3f}".format(
+        "y_m={:.3f} y_x={:.3f}".format(
             stats.get("y_mean", 0), stats.get("y_max", 0)),
-        "c_mean={:.3f} c_max={:.3f}".format(
+        "c_m={:.3f} c_x={:.3f}".format(
             stats.get("conf_mean", 0), stats.get("conf_max", 0)),
-        "high={:.3f}".format(stats.get("high_ratio", 0)),
+        "e_m={:.3f} e_x={:.3f}".format(
+            stats.get("eff_mean", 0), stats.get("eff_max", 0)),
+        "e_hi={:.3f} hi={:.3f}".format(
+            stats.get("eff_high_ratio", 0), stats.get("high_ratio", 0)),
     ]
 
     for i, line in enumerate(lines):
@@ -147,6 +150,37 @@ def add_text_annotations(img, pair_id, stats):
                     cv2.LINE_AA)
 
     return img
+
+
+def _compute_stats(heatmap, mask):
+    # type: (np.ndarray, np.ndarray) -> Dict[str, float]
+    """Compute summary stats for a heatmap within a valid region."""
+    if mask is not None:
+        valid = heatmap[mask]
+    else:
+        valid = heatmap.flatten()
+    if len(valid) == 0:
+        return {"y_mean": 0, "y_max": 0}
+    return {
+        "y_mean": float(valid.mean()),
+        "y_max": float(valid.max()),
+    }
+
+
+def _compute_effective_stats(effective, mask):
+    # type: (np.ndarray, np.ndarray) -> Dict[str, float]
+    """Compute effective = y_sem * conf stats."""
+    if mask is not None:
+        valid = effective[mask]
+    else:
+        valid = effective.flatten()
+    if len(valid) == 0:
+        return {"eff_mean": 0, "eff_max": 0, "eff_high_ratio": 0}
+    return {
+        "eff_mean": float(valid.mean()),
+        "eff_max": float(valid.max()),
+        "eff_high_ratio": float((valid > 0.3).mean()),
+    }
 
 
 def create_canvas(
@@ -162,74 +196,69 @@ def create_canvas(
     alpha,         # type: float
 ):
     # type: (...) -> np.ndarray
-    """Create a 2x3 canvas for visualization.
+    """Create a 2x4 canvas for visualization.
 
     Layout:
-        Row 0: [RGB0] [y_sem0 overlay] [conf0 overlay]
-        Row 1: [RGB1] [y_sem1 overlay] [conf1 overlay]
-
-    Args:
-        rgb0, rgb1: RGB images [H, W, 3]
-        y_sem0_full, y_sem1_full: Heatmaps resized to [H, W]
-        conf0_full, conf1_full: Heatmaps resized to [H, W]
-        valid_mask0, valid_mask1: Boolean masks [H, W]
-        pair_id: Pair identifier
-        alpha: Overlay transparency
+        Row 0: [RGB0] [y_sem0 overlay] [conf0 overlay] [effective0 overlay]
+        Row 1: [RGB1] [y_sem1 overlay] [conf1 overlay] [effective1 overlay]
 
     Returns:
-        Canvas image [2*H, 3*W, 3]
+        Canvas image [2*H, 4*W, 3]
     """
-    h, w = rgb0.shape[:2]
+    # Compute effective maps
+    eff0_full = y_sem0_full * conf0_full
+    eff1_full = y_sem1_full * conf1_full
 
     # Compute stats
-    def compute_stats(heatmap, mask):
-        # type: (np.ndarray, np.ndarray) -> Dict[str, float]
-        if mask is not None:
-            valid = heatmap[mask]
-        else:
-            valid = heatmap.flatten()
-        if len(valid) == 0:
-            return {"y_mean": 0, "y_max": 0, "conf_mean": 0,
-                    "conf_max": 0, "high_ratio": 0}
-        return {
-            "y_mean": float(valid.mean()),
-            "y_max": float(valid.max()),
-            "conf_mean": float(valid.mean()),
-            "conf_max": float(valid.max()),
-            "high_ratio": float((valid > 0.6).mean()),
-        }
+    y_stats0 = _compute_stats(y_sem0_full, valid_mask0)
+    y_stats1 = _compute_stats(y_sem1_full, valid_mask1)
+    c_stats0 = _compute_stats(conf0_full, valid_mask0)
+    c_stats1 = _compute_stats(conf1_full, valid_mask1)
+    e_stats0 = _compute_effective_stats(eff0_full, valid_mask0)
+    e_stats1 = _compute_effective_stats(eff1_full, valid_mask1)
 
-    y_stats0 = compute_stats(y_sem0_full, valid_mask0)
-    y_stats1 = compute_stats(y_sem1_full, valid_mask1)
-    c_stats0 = compute_stats(conf0_full, valid_mask0)
-    c_stats1 = compute_stats(conf1_full, valid_mask1)
+    # Merge stats for annotation
+    def merge_stats(*dicts):
+        # type: (*Dict[str, float]) -> Dict[str, float]
+        out = {}  # type: Dict[str, float]
+        for d in dicts:
+            out.update(d)
+        return out
+
+    anno_y0 = merge_stats(y_stats0, c_stats0, e_stats0,
+                          {"high_ratio": float((y_sem0_full[valid_mask0] > 0.6).mean()) if valid_mask0.any() else 0})
+    anno_y1 = merge_stats(y_stats1, c_stats1, e_stats1,
+                          {"high_ratio": float((y_sem1_full[valid_mask1] > 0.6).mean()) if valid_mask1.any() else 0})
 
     # Build panels
     panels = [
         # Row 0: image 0
-        add_text_annotations(rgb0, pair_id + " img0", y_stats0),
+        add_text_annotations(rgb0, pair_id + " img0", anno_y0),
         add_text_annotations(
             overlay_heatmap(rgb0, y_sem0_full, alpha, valid_mask0),
-            "y_sem0", y_stats0),
+            "y_sem0", anno_y0),
         add_text_annotations(
             overlay_heatmap(rgb0, conf0_full, alpha, valid_mask0),
-            "conf0", c_stats0),
+            "conf0", anno_y0),
+        add_text_annotations(
+            overlay_heatmap(rgb0, eff0_full, alpha, valid_mask0),
+            "eff0=y*c", anno_y0),
         # Row 1: image 1
-        add_text_annotations(rgb1, pair_id + " img1", y_stats1),
+        add_text_annotations(rgb1, pair_id + " img1", anno_y1),
         add_text_annotations(
             overlay_heatmap(rgb1, y_sem1_full, alpha, valid_mask1),
-            "y_sem1", y_stats1),
+            "y_sem1", anno_y1),
         add_text_annotations(
             overlay_heatmap(rgb1, conf1_full, alpha, valid_mask1),
-            "conf1", c_stats1),
+            "conf1", anno_y1),
+        add_text_annotations(
+            overlay_heatmap(rgb1, eff1_full, alpha, valid_mask1),
+            "eff1=y*c", anno_y1),
     ]
 
-    # Row labels
-    label_color = (200, 200, 200)
-
-    # Arrange into 2x3 grid
-    row0 = np.concatenate([panels[0], panels[1], panels[2]], axis=1)
-    row1 = np.concatenate([panels[3], panels[4], panels[5]], axis=1)
+    # Arrange into 2x4 grid
+    row0 = np.concatenate([panels[0], panels[1], panels[2], panels[3]], axis=1)
+    row1 = np.concatenate([panels[4], panels[5], panels[6], panels[7]], axis=1)
     canvas = np.concatenate([row0, row1], axis=0)
 
     return canvas
@@ -299,6 +328,10 @@ def process_pair_vis(
     canvas_bgr = cv2.cvtColor(canvas, cv2.COLOR_RGB2BGR)
     cv2.imwrite(str(canvas_path), canvas_bgr)
 
+    # Compute effective maps
+    eff0_full = y_sem0_full * conf0_full
+    eff1_full = y_sem1_full * conf1_full
+
     # Compute stats
     vm0 = valid_mask0
     vm1 = valid_mask1
@@ -312,6 +345,12 @@ def process_pair_vis(
         "conf1_mean": float(conf1_full[vm1].mean()) if vm1.any() else 0,
         "high_ratio0": float((y_sem0_full[vm0] > 0.6).mean()) if vm0.any() else 0,
         "high_ratio1": float((y_sem1_full[vm1] > 0.6).mean()) if vm1.any() else 0,
+        "eff0_mean": float(eff0_full[vm0].mean()) if vm0.any() else 0,
+        "eff1_mean": float(eff1_full[vm1].mean()) if vm1.any() else 0,
+        "eff0_max": float(eff0_full[vm0].max()) if vm0.any() else 0,
+        "eff1_max": float(eff1_full[vm1].max()) if vm1.any() else 0,
+        "eff0_high_ratio": float((eff0_full[vm0] > 0.3).mean()) if vm0.any() else 0,
+        "eff1_high_ratio": float((eff1_full[vm1] > 0.3).mean()) if vm1.any() else 0,
         "canvas_path": str(canvas_path),
         "status": "ok",
         "error": "",
@@ -389,6 +428,9 @@ def main():
                     result["y_sem0_mean"], result["y_sem0_max"]))
                 print("    conf0:  mean={:.3f}".format(result["conf0_mean"]))
                 print("    high0:  {:.3f}".format(result["high_ratio0"]))
+                print("    eff0:   mean={:.3f}, max={:.3f}, high={:.3f}".format(
+                    result["eff0_mean"], result["eff0_max"],
+                    result["eff0_high_ratio"]))
             else:
                 fail_count += 1
                 print("  FAILED: {}".format(result["error"]))
@@ -406,18 +448,19 @@ def main():
     with open(str(summary_path), "w") as f:
         f.write("# Pseudo-label Visualization Summary\n\n")
         f.write("Generated from: {}\n\n".format(args.label_dir))
-        f.write("| # | pair_id | y_sem0_mean | y_sem0_max | conf0_mean | high_ratio0 | canvas |\n")
-        f.write("|---|---------|-------------|------------|------------|-------------|--------|\n")
+        f.write("| # | pair_id | y_sem0_mean | y_sem0_max | conf0_mean | high_ratio0 | eff0_mean | eff0_max | eff0_high_ratio | canvas |\n")
+        f.write("|---|---------|-------------|------------|------------|-------------|-----------|----------|-----------------|--------|\n")
         for i, r in enumerate(vis_results):
             if r["status"] == "ok":
-                f.write("| {} | {} | {:.4f} | {:.4f} | {:.4f} | {:.4f} | [canvas]({}) |\n".format(
+                f.write("| {} | {} | {:.4f} | {:.4f} | {:.4f} | {:.4f} | {:.4f} | {:.4f} | {:.4f} | [canvas]({}) |\n".format(
                     i + 1, r["pair_id"][:16],
                     r["y_sem0_mean"], r["y_sem0_max"],
                     r["conf0_mean"], r["high_ratio0"],
+                    r["eff0_mean"], r["eff0_max"], r["eff0_high_ratio"],
                     r["canvas_path"].replace("\\", "/"),
                 ))
             else:
-                f.write("| {} | {} | - | - | - | - | FAILED: {} |\n".format(
+                f.write("| {} | {} | - | - | - | - | - | - | - | FAILED: {} |\n".format(
                     i + 1, r["pair_id"][:16], r.get("error", "unknown")))
         f.write("\n**Total: {} ok, {} failed**\n".format(ok_count, fail_count))
 
