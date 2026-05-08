@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python tools/semantic_covis/export_megadepth_pairs.py --help)"
+      "Bash(python tools/semantic_covis/export_megadepth_pairs.py --help)",
+      "Bash(python tools/semantic_covis/covisibility_estimator.py)"
     ]
   }
 }
