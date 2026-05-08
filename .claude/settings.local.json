@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(python tools/semantic_covis/export_megadepth_pairs.py --help)",
-      "Bash(python tools/semantic_covis/covisibility_estimator.py)"
+      "Bash(python tools/semantic_covis/covisibility_estimator.py)",
+      "Bash(python -m py_compile tools/semantic_covis/generate_pseudo_labels.py)",
+      "Bash(python tools/semantic_covis/generate_pseudo_labels.py --help)"
     ]
   }
 }
