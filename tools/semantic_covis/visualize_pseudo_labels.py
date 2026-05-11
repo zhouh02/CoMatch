@@ -50,6 +50,8 @@ def parse_args():
     )
     parser.add_argument("--max-vis", type=int, default=20)
     parser.add_argument("--alpha", type=float, default=0.45)
+    parser.add_argument("--show-debug", action="store_true",
+                        help="Show CSLS debug fields (E0/E1, C0/C1) if available")
     return parser.parse_args()
 
 
@@ -268,6 +270,7 @@ def process_pair_vis(
     npz_path,      # type: Path
     output_dir,    # type: Path
     alpha,         # type: float
+    show_debug=False,  # type: bool
 ):
     # type: (...) -> Dict[str, Any]
     """Process one pair and generate visualization canvas.
@@ -328,6 +331,34 @@ def process_pair_vis(
     canvas_bgr = cv2.cvtColor(canvas, cv2.COLOR_RGB2BGR)
     cv2.imwrite(str(canvas_path), canvas_bgr)
 
+    # Debug panels for clip_csls_v1
+    debug_paths = []  # type: list
+    if show_debug:
+        csls_debug_keys = [
+            ("csls_E0", "csls_E1", "E_existence"),
+            ("csls_C0", "csls_C1", "C_consistency"),
+        ]
+        for key0, key1, label in csls_debug_keys:
+            if key0 in data and key1 in data:
+                d0 = data[key0].astype(np.float32)
+                d1 = data[key1].astype(np.float32)
+                # These are 1D at clip-grid level; reshape if needed
+                clip_grid0 = tuple(data["clip_grid0"].astype(int))
+                clip_grid1 = tuple(data["clip_grid1"].astype(int))
+                if d0.ndim == 1 and d0.shape[0] == clip_grid0[0] * clip_grid0[1]:
+                    d0 = d0.reshape(clip_grid0)
+                if d1.ndim == 1 and d1.shape[0] == clip_grid1[0] * clip_grid1[1]:
+                    d1 = d1.reshape(clip_grid1)
+                d0_full = resize_heatmap(d0, h, w)
+                d1_full = resize_heatmap(d1, h, w)
+                dbg_canvas = np.concatenate([
+                    overlay_heatmap(rgb0, d0_full, alpha, valid_mask0),
+                    overlay_heatmap(rgb1, d1_full, alpha, valid_mask1),
+                ], axis=1)
+                dbg_path = output_dir / "{}_debug_{}.jpg".format(pair_id, label)
+                cv2.imwrite(str(dbg_path), cv2.cvtColor(dbg_canvas, cv2.COLOR_RGB2BGR))
+                debug_paths.append(str(dbg_path))
+
     # Compute effective maps
     eff0_full = y_sem0_full * conf0_full
     eff1_full = y_sem1_full * conf1_full
@@ -354,6 +385,7 @@ def process_pair_vis(
         "canvas_path": str(canvas_path),
         "status": "ok",
         "error": "",
+        "debug_paths": debug_paths,
     }
 
     return stats
@@ -370,6 +402,7 @@ def main():
     print("  output-dir: {}".format(args.output_dir))
     print("  max-vis:    {}".format(args.max_vis))
     print("  alpha:      {}".format(args.alpha))
+    print("  show-debug: {}".format(args.show_debug))
     print("=" * 60)
 
     label_dir = Path(args.label_dir)
@@ -418,7 +451,8 @@ def main():
             continue
 
         try:
-            result = process_pair_vis(npz_path, output_dir, args.alpha)
+            result = process_pair_vis(npz_path, output_dir, args.alpha,
+                                      show_debug=args.show_debug)
             vis_results.append(result)
 
             if result["status"] == "ok":

@@ -35,6 +35,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 from clip_feature_extractor import CLIPFeatureExtractor, resize_heatmap_to_coarse
 from covisibility_estimator import compute_semantic_covisibility
+from clip_csls_sem_covis import compute_clip_semantic_covisibility_label
 
 
 def parse_args():
@@ -74,8 +75,8 @@ def parse_args():
     parser.add_argument("--q-low", type=float, default=40)
     parser.add_argument("--q-high", type=float, default=85)
     parser.add_argument(
-        "--mode", type=str, default="v1", choices=["v1", "v2"],
-        help="Covisibility estimator mode: v1 (original) or v2 (enhanced)",
+        "--mode", type=str, default="v1", choices=["v1", "v2", "clip_csls_v1"],
+        help="Covisibility estimator mode: v1, v2, or clip_csls_v1",
     )
     parser.add_argument(
         "--specificity-gamma", type=float, default=1.5,
@@ -89,6 +90,19 @@ def parse_args():
                         help="Overwrite existing npz files")
     parser.add_argument("--save-debug", action="store_true",
                         help="Save additional debug fields (clip-grid level)")
+    # clip_csls_v1 specific parameters
+    parser.add_argument("--csls-k", type=int, default=20,
+                        help="CSLS hubness correction k (clip_csls_v1 only)")
+    parser.add_argument("--topk-ratio", type=float, default=0.05,
+                        help="Existence top-k ratio (clip_csls_v1 only)")
+    parser.add_argument("--topk-min", type=int, default=5,
+                        help="Existence top-k minimum (clip_csls_v1 only)")
+    parser.add_argument("--smooth-kernel", type=int, default=3,
+                        help="Spatial smoothing kernel (clip_csls_v1 only)")
+    parser.add_argument("--q-low-csls", type=float, default=0.05,
+                        help="Lower quantile for clip_csls_v1 normalization")
+    parser.add_argument("--q-high-csls", type=float, default=0.95,
+                        help="Upper quantile for clip_csls_v1 normalization")
     return parser.parse_args()
 
 
@@ -325,6 +339,181 @@ def process_pair(
     return stats
 
 
+def process_pair_clip_csls(
+    pair_info,       # type: Dict[str, Any]
+    image_root,      # type: str
+    output_dir,      # type: Path
+    extractor,       # type: CLIPFeatureExtractor
+    coarse_scale,    # type: int
+    csls_k,          # type: int
+    topk_ratio,      # type: float
+    topk_min,        # type: int
+    tau,             # type: float
+    smooth_kernel,   # type: int
+    q_low,           # type: float
+    q_high,          # type: float
+    save_debug,      # type: bool
+    overwrite,       # type: bool
+):
+    # type: (...) -> Dict[str, Any]
+    """Process a single image pair using clip_csls_v1 and save npz.
+
+    Returns stats dict.
+    """
+    pair_id = pair_info["pair_id"]
+    npz_path = output_dir / "{}.npz".format(pair_id)
+
+    if npz_path.exists() and not overwrite:
+        return {"pair_id": pair_id, "status": "skipped", "error": ""}
+
+    img0 = os.path.join(image_root, pair_info["image0_path"])
+    img1 = os.path.join(image_root, pair_info["image1_path"])
+
+    if not os.path.isfile(img0):
+        return {"pair_id": pair_id, "status": "failed",
+                "error": "image0 not found: {}".format(img0)}
+    if not os.path.isfile(img1):
+        return {"pair_id": pair_id, "status": "failed",
+                "error": "image1 not found: {}".format(img1)}
+
+    # Extract CLIP features
+    result0 = extractor.extract(img0, return_dict=True, return_numpy=False)
+    result1 = extractor.extract(img1, return_dict=True, return_numpy=False)
+
+    pf0 = result0["patch_features"]  # [1, N, D] or [N, D]
+    pf1 = result1["patch_features"]
+    grid0 = result0["grid_size"]
+    grid1 = result1["grid_size"]
+    pp0 = result0["preprocess"]
+    pp1 = result1["preprocess"]
+
+    if pf0.ndim == 3 and pf0.shape[0] == 1:
+        pf0 = pf0.squeeze(0)
+    if pf1.ndim == 3 and pf1.shape[0] == 1:
+        pf1 = pf1.squeeze(0)
+
+    # Compute clip_csls_v1 pseudo-labels
+    if save_debug:
+        Y0_map, Y1_map, debug = compute_clip_semantic_covisibility_label(
+            pf0, pf1, grid0, grid1,
+            csls_k=csls_k,
+            topk_ratio=topk_ratio,
+            topk_min=topk_min,
+            tau=tau,
+            smooth_kernel=smooth_kernel,
+            q_low=q_low,
+            q_high=q_high,
+            return_debug=True,
+        )
+    else:
+        Y0_map, Y1_map = compute_clip_semantic_covisibility_label(
+            pf0, pf1, grid0, grid1,
+            csls_k=csls_k,
+            topk_ratio=topk_ratio,
+            topk_min=topk_min,
+            tau=tau,
+            smooth_kernel=smooth_kernel,
+            q_low=q_low,
+            q_high=q_high,
+            return_debug=False,
+        )
+
+    # Resize to CoMatch coarse grid
+    pad_size = pp0["pad_size"]
+    ch = pad_size // coarse_scale
+    cw = pad_size // coarse_scale
+
+    y_sem0_coarse = resize_to_coarse(Y0_map, ch, cw)
+    y_sem1_coarse = resize_to_coarse(Y1_map, ch, cw)
+    # clip_csls_v1 does not produce separate conf; use y_sem as conf
+    conf0_coarse = y_sem0_coarse.copy()
+    conf1_coarse = y_sem1_coarse.copy()
+
+    # Downsample valid_mask to coarse grid
+    valid_mask0 = pp0["valid_mask"]
+    valid_mask1 = pp1["valid_mask"]
+    if isinstance(valid_mask0, torch.Tensor):
+        valid_mask0 = valid_mask0.cpu().numpy()
+    if isinstance(valid_mask1, torch.Tensor):
+        valid_mask1 = valid_mask1.cpu().numpy()
+
+    coarse_valid0 = downsample_mask(valid_mask0, ch, cw)
+    coarse_valid1 = downsample_mask(valid_mask1, ch, cw)
+
+    y_sem0_coarse[~coarse_valid0] = 0.0
+    y_sem1_coarse[~coarse_valid1] = 0.0
+    conf0_coarse[~coarse_valid0] = 0.0
+    conf1_coarse[~coarse_valid1] = 0.0
+
+    scale0 = pp0["scale"]
+    scale1 = pp1["scale"]
+    if isinstance(scale0, torch.Tensor):
+        scale0 = scale0.cpu().numpy()
+    if isinstance(scale1, torch.Tensor):
+        scale1 = scale1.cpu().numpy()
+
+    npz_data = {
+        "pair_id": pair_id,
+        "scene_id": pair_info["scene_id"],
+        "pair_idx": pair_info["pair_idx"],
+        "idx0": pair_info["idx0"],
+        "idx1": pair_info["idx1"],
+        "image0_rel_path": pair_info["image0_path"],
+        "image1_rel_path": pair_info["image1_path"],
+        "image0_abs_path": os.path.abspath(img0),
+        "image1_abs_path": os.path.abspath(img1),
+        "original_hw0": np.array(pp0["original_hw"], dtype=np.int32),
+        "original_hw1": np.array(pp1["original_hw"], dtype=np.int32),
+        "resized_hw0": np.array(pp0["resized_hw"], dtype=np.int32),
+        "resized_hw1": np.array(pp1["resized_hw"], dtype=np.int32),
+        "valid_hw0": np.array(pp0["valid_hw"], dtype=np.int32),
+        "valid_hw1": np.array(pp1["valid_hw"], dtype=np.int32),
+        "pad_size0": np.array(pp0["pad_size"], dtype=np.int32),
+        "pad_size1": np.array(pp1["pad_size"], dtype=np.int32),
+        "coarse_hw0": np.array([ch, cw], dtype=np.int32),
+        "coarse_hw1": np.array([ch, cw], dtype=np.int32),
+        "clip_grid0": np.array(grid0, dtype=np.int32),
+        "clip_grid1": np.array(grid1, dtype=np.int32),
+        "scale0": scale0.astype(np.float32),
+        "scale1": scale1.astype(np.float32),
+        "y_sem0": y_sem0_coarse.astype(np.float16),
+        "y_sem1": y_sem1_coarse.astype(np.float16),
+        "conf0": conf0_coarse.astype(np.float16),
+        "conf1": conf1_coarse.astype(np.float16),
+        "method": "clip_csls_v1",
+    }
+
+    if save_debug:
+        for key in ["Y0_before_smooth", "Y1_before_smooth",
+                     "Y0_before_norm", "Y1_before_norm"]:
+            npz_data["csls_{}".format(key)] = debug[key].cpu().numpy().astype(np.float16)
+        for key in ["E0", "E1", "C0", "C1"]:
+            arr = debug[key].cpu().numpy().astype(np.float16)
+            npz_data["csls_{}".format(key)] = arr
+        npz_data["csls_S_raw"] = debug["S_raw"].cpu().numpy().astype(np.float16)
+        npz_data["csls_S_csls"] = debug["S_csls"].cpu().numpy().astype(np.float16)
+
+    np.savez(str(npz_path), **npz_data)
+
+    stats = {
+        "pair_id": pair_id,
+        "y_sem0_mean": float(y_sem0_coarse.mean()),
+        "y_sem1_mean": float(y_sem1_coarse.mean()),
+        "y_sem0_max": float(y_sem0_coarse.max()),
+        "y_sem1_max": float(y_sem1_coarse.max()),
+        "conf0_mean": float(conf0_coarse.mean()),
+        "conf1_mean": float(conf1_coarse.mean()),
+        "conf0_max": float(conf0_coarse.max()),
+        "conf1_max": float(conf1_coarse.max()),
+        "high_ratio0": float((y_sem0_coarse > 0.6).mean()),
+        "high_ratio1": float((y_sem1_coarse > 0.6).mean()),
+        "status": "ok",
+        "error": "",
+    }
+
+    return stats
+
+
 def main():
     # type: () -> int
     args = parse_args()
@@ -349,6 +538,13 @@ def main():
     print("  max-pairs:    {}".format(args.max_pairs if args.max_pairs > 0 else "all"))
     print("  overwrite:    {}".format(args.overwrite))
     print("  save-debug:   {}".format(args.save_debug))
+    if args.mode == "clip_csls_v1":
+        print("  csls-k:       {}".format(args.csls_k))
+        print("  topk-ratio:   {}".format(args.topk_ratio))
+        print("  topk-min:     {}".format(args.topk_min))
+        print("  smooth-kernel:{}".format(args.smooth_kernel))
+        print("  q-low-csls:   {}".format(args.q_low_csls))
+        print("  q-high-csls:  {}".format(args.q_high_csls))
     print("=" * 60)
 
     # Setup output directory
@@ -403,24 +599,42 @@ def main():
         print("\n[{}/{}] Processing pair: {}".format(i + 1, len(pairs), pair_id))
 
         try:
-            stats = process_pair(
-                pair_info=pair_info,
-                image_root=args.image_root,
-                output_dir=output_dir,
-                extractor=extractor,
-                coarse_scale=args.coarse_scale,
-                mode=args.mode,
-                topk=args.topk,
-                temperature=args.temperature,
-                q_low=args.q_low,
-                q_high=args.q_high,
-                specificity_gamma=args.specificity_gamma,
-                k_margin=args.k_margin,
-                q_margin_low=args.q_margin_low,
-                q_margin_high=args.q_margin_high,
-                save_debug=args.save_debug,
-                overwrite=args.overwrite,
-            )
+            if args.mode == "clip_csls_v1":
+                stats = process_pair_clip_csls(
+                    pair_info=pair_info,
+                    image_root=args.image_root,
+                    output_dir=output_dir,
+                    extractor=extractor,
+                    coarse_scale=args.coarse_scale,
+                    csls_k=args.csls_k,
+                    topk_ratio=args.topk_ratio,
+                    topk_min=args.topk_min,
+                    tau=args.temperature,
+                    smooth_kernel=args.smooth_kernel,
+                    q_low=args.q_low_csls,
+                    q_high=args.q_high_csls,
+                    save_debug=args.save_debug,
+                    overwrite=args.overwrite,
+                )
+            else:
+                stats = process_pair(
+                    pair_info=pair_info,
+                    image_root=args.image_root,
+                    output_dir=output_dir,
+                    extractor=extractor,
+                    coarse_scale=args.coarse_scale,
+                    mode=args.mode,
+                    topk=args.topk,
+                    temperature=args.temperature,
+                    q_low=args.q_low,
+                    q_high=args.q_high,
+                    specificity_gamma=args.specificity_gamma,
+                    k_margin=args.k_margin,
+                    q_margin_low=args.q_margin_low,
+                    q_margin_high=args.q_margin_high,
+                    save_debug=args.save_debug,
+                    overwrite=args.overwrite,
+                )
         except Exception as e:
             stats = {
                 "pair_id": pair_id,

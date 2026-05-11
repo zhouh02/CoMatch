@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(echo \"exit: $?\")",
+      "Bash(python -c \"from tools.semantic_covis.clip_csls_sem_covis import compute_clip_semantic_covisibility_label; print\\('import ok'\\)\")"
+    ]
+  }
+}
