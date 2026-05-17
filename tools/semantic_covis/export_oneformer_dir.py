@@ -290,10 +290,9 @@ def export_oneformer_dir(
         else:
             rel_stem = img_stem
 
-        # npz_path = npz_dir / f"{rel_stem.replace('/', '_').replace('\\\\', '_')}.npz"
         safe_stem = rel_stem.replace("/", "_").replace("\\", "_")
         npz_path = npz_dir / f"{safe_stem}.npz"
-        json_path = json_dir / f"{rel_stem.replace('/', '_').replace('\\\\', '_')}.json"
+        json_path = json_dir / f"{safe_stem}.json"
 
         # Skip existing
         if skip_existing and npz_path.exists() and json_path.exists():
