@@ -74,14 +74,16 @@ class OneFormerSegmentation:
         meta_dir: str = None,
         device: str = None,
         model_name: str = "shi-labs/oneformer_ade20k_swin_large",
+        class_info_file: str = "ade20k_panoptic.json",
     ):
         """Initialize OneFormer model.
 
         Args:
             model_dir: Local path to model (priority over model_name)
-            meta_dir: Local path to metadata (id2label.json)
+            meta_dir: Local path to metadata directory (containing class_info_file)
             device: 'cuda' or 'cpu'
             model_name: HuggingFace model name (fallback if model_dir not found)
+            class_info_file: Filename of the class info JSON inside meta_dir
         """
         if device is None:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -89,37 +91,167 @@ class OneFormerSegmentation:
             self.device = device
 
         print(f"Loading OneFormer model...")
-        print(f"  Model dir: {model_dir or 'from hub'}")
+        print(f"  Model dir:  {model_dir or 'from hub'}")
         print(f"  Meta dir:   {meta_dir}")
+        print(f"  Class file: {class_info_file}")
         print(f"  Device:     {self.device}")
 
-        # Load processor
-        if model_dir:
-            self.processor = OneFormerProcessor.from_pretrained(model_dir)
-        else:
-            self.processor = OneFormerProcessor.from_pretrained(model_name)
+        # ---- Build kwargs to force local-only loading and use local metadata ----
+        # OneFormerProcessor / OneFormerImageProcessor pulls `class_info_file` from
+        # `shi-labs/oneformer_demo` on the HuggingFace hub by default. We point it
+        # at the local meta_dir via `repo_path=<meta_dir>` and force offline.
+        processor_kwargs = {}
+        model_kwargs = {}
 
-        # Load model
-        if model_dir:
-            self.model = OneFormerForUniversalSegmentation.from_pretrained(model_dir)
-        else:
-            self.model = OneFormerForUniversalSegmentation.from_pretrained(model_name)
+        if meta_dir is not None:
+            meta_dir_str = str(meta_dir)
+            processor_kwargs["repo_path"] = meta_dir_str
+            processor_kwargs["class_info_file"] = class_info_file
+            # Also pre-patch the preprocessor_config.json in model_dir so its
+            # `repo_path` field doesn't trigger any hub access.
+            if model_dir is not None:
+                self._patch_processor_config(model_dir, meta_dir_str, class_info_file)
+
+        # Force offline / local-only to avoid HF hub access
+        processor_kwargs["local_files_only"] = True
+        model_kwargs["local_files_only"] = True
+
+        source = model_dir if model_dir else model_name
+
+        # ---- Load processor ----
+        try:
+            self.processor = OneFormerProcessor.from_pretrained(source, **processor_kwargs)
+        except TypeError:
+            # Older transformers versions may not accept `repo_path` here.
+            # Fall back to patching the on-disk config and retrying without the
+            # explicit kwargs.
+            print("  Note: transformers version does not accept repo_path kwarg; "
+                  "patched preprocessor_config.json instead.")
+            fallback_kwargs = {"local_files_only": True}
+            self.processor = OneFormerProcessor.from_pretrained(source, **fallback_kwargs)
+
+        # Some transformers versions store the metadata path on the inner image
+        # processor / tokenizer; patch it explicitly as a belt-and-suspenders.
+        self._override_processor_metadata(self.processor, meta_dir, class_info_file)
+
+        # ---- Load model ----
+        try:
+            self.model = OneFormerForUniversalSegmentation.from_pretrained(source, **model_kwargs)
+        except TypeError:
+            self.model = OneFormerForUniversalSegmentation.from_pretrained(source)
 
         self.model = self.model.to(self.device)
         self.model.eval()
 
-        # Load id2label
-        if meta_dir and os.path.exists(meta_dir):
-            id2label_path = os.path.join(meta_dir, "id2label.json")
-            if os.path.exists(id2label_path):
-                with open(id2label_path, 'r') as f:
-                    self.id2label = json.load(f)
-            else:
-                self.id2label = self.processor.id2label
-        else:
-            self.id2label = self.processor.id2label
+        # Load id2label (prefer meta_dir's id2label.json -> processor.id2label -> {})
+        self.id2label = self._load_id2label(meta_dir)
 
         print(f"  Loaded {len(self.id2label)} semantic classes")
+
+    @staticmethod
+    def _patch_processor_config(model_dir: str, meta_dir: str, class_info_file: str) -> None:
+        """Patch the on-disk preprocessor_config.json so that `repo_path` points
+        to the local metadata directory.
+
+        This prevents OneFormerImageProcessor from trying to fetch
+        `<repo_path>/resolve/main/<class_info_file>` from the HuggingFace hub.
+        """
+        candidates = [
+            os.path.join(model_dir, "preprocessor_config.json"),
+            os.path.join(model_dir, "image_processor_config.json"),
+        ]
+        for cfg_path in candidates:
+            if not os.path.exists(cfg_path):
+                continue
+            try:
+                with open(cfg_path, "r") as f:
+                    cfg = json.load(f)
+            except Exception as e:
+                print(f"  WARNING: could not read {cfg_path}: {e}")
+                continue
+
+            modified = False
+            if "repo_path" in cfg and cfg.get("repo_path") != meta_dir:
+                cfg["repo_path"] = meta_dir
+                modified = True
+            elif "repo_path" not in cfg:
+                cfg["repo_path"] = meta_dir
+                modified = True
+            if cfg.get("class_info_file") != class_info_file:
+                cfg["class_info_file"] = class_info_file
+                modified = True
+
+            if modified:
+                try:
+                    with open(cfg_path, "w") as f:
+                        json.dump(cfg, f, indent=2)
+                    print(f"  Patched {cfg_path}: repo_path -> {meta_dir}")
+                except Exception as e:
+                    print(f"  WARNING: could not patch {cfg_path}: {e}")
+
+    @staticmethod
+    def _override_processor_metadata(processor, meta_dir, class_info_file: str) -> None:
+        """Override the metadata path stored on the loaded processor instance."""
+        if meta_dir is None:
+            return
+        meta_dir_str = str(meta_dir)
+
+        # OneFormerProcessor delegates to .image_processor for class metadata.
+        image_processor = getattr(processor, "image_processor", None)
+        if image_processor is None:
+            return
+
+        if hasattr(image_processor, "repo_path"):
+            image_processor.repo_path = meta_dir_str
+        if hasattr(image_processor, "class_info_file"):
+            image_processor.class_info_file = class_info_file
+
+        # If the processor has already cached metadata via a property, clear it.
+        for attr in ("_metadata", "metadata_"):
+            if hasattr(image_processor, attr):
+                try:
+                    delattr(image_processor, attr)
+                except Exception:
+                    pass
+
+    @staticmethod
+    def _load_id2label(meta_dir):
+        """Load id2label mapping from meta_dir if available."""
+        if not meta_dir or not os.path.exists(str(meta_dir)):
+            return {}
+
+        # Try common filenames
+        for name in ("id2label.json", "ade20k_id2label.json"):
+            p = os.path.join(str(meta_dir), name)
+            if os.path.exists(p):
+                with open(p, "r") as f:
+                    raw = json.load(f)
+                # Ensure keys are ints
+                return {int(k): v for k, v in raw.items()}
+
+        # Fall back to parsing class_info_file if it's a list of {id,name,...}
+        for name in ("ade20k_panoptic.json", "ade20k_semantic.json"):
+            p = os.path.join(str(meta_dir), name)
+            if os.path.exists(p):
+                try:
+                    with open(p, "r") as f:
+                        raw = json.load(f)
+                    if isinstance(raw, list):
+                        result = {}
+                        for i, entry in enumerate(raw):
+                            if isinstance(entry, dict):
+                                lid = entry.get("id", i)
+                                lname = entry.get("name", str(lid))
+                                result[int(lid)] = lname
+                            else:
+                                result[i] = str(entry)
+                        return result
+                    if isinstance(raw, dict):
+                        return {int(k): v for k, v in raw.items()}
+                except Exception:
+                    continue
+
+        return {}
 
     @torch.no_grad()
     def segment_image(self, image_path: str, target_size: int = None):
