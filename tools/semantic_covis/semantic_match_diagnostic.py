@@ -690,7 +690,8 @@ def diagnose_batch(
     score_thresh: float = 0.0,
     thresholds: Tuple[float, ...] = (0.2, 0.5, 0.8),
     boundary_radius: int = 0,
-    save_per_match: bool = False,
+    save_all_matches: bool = False,
+    save_per_match: bool = None,
 ) -> List[Dict]:
     """Diagnose semantic consistency for a batch of matches.
 
@@ -707,11 +708,17 @@ def diagnose_batch(
         score_thresh: Minimum segment score
         thresholds: Confidence thresholds for stratified analysis
         boundary_radius: Boundary radius for validity check
-        save_per_match: If True, save per-match details
+        save_all_matches: If True, save per-match details (preferred name)
+        save_per_match: Deprecated alias of save_all_matches (kept for
+            backward compatibility)
 
     Returns:
         List of diagnostic results, one per pair in the batch
     """
+    # Back-compat: accept either save_all_matches or save_per_match
+    if save_per_match is not None:
+        save_all_matches = bool(save_per_match) or save_all_matches
+
     results = []
 
     # Extract match data
@@ -809,7 +816,7 @@ def diagnose_batch(
         score_thresh=score_thresh,
         thresholds=thresholds,
         boundary_radius=boundary_radius,
-        save_all_matches=save_per_match,
+        save_all_matches=save_all_matches,
     )
 
     result['image0'] = image0_path if isinstance(image0_path, str) else str(image0_path)
