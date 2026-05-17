@@ -285,7 +285,7 @@ class OneFormerSegmentation:
         # Process
         inputs = self.processor(
             images=image,
-            task_inputs=[{"task": "semantic"}],
+            task_inputs=["semantic"],
             return_tensors="pt"
         )
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
