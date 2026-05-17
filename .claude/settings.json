@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "Bash(python -m py_compile tools/semantic_covis/semantic_match_diagnostic.py test_semantic.py)"
     ]
   }
 }

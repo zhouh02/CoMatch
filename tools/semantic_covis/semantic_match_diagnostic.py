@@ -108,81 +108,94 @@ def image_path_to_safe_stem(image_path: str) -> str:
 
 # Default ADE20K coarse grouping for semantic consistency diagnosis
 DEFAULT_COARSE_GROUPS = {
+    # ADE20K label names are normalized via normalize_label_name():
+    #   "building, edifice" -> "building"
+    #   "road, route"       -> "road"
+    #   "sidewalk, pavement"-> "sidewalk"
+    #   "earth, ground"     -> "earth"
+    #   "swimming pool"     -> "swimming pool"
+    # So COARSE_GROUPS entries should use the normalized primary class names.
     'building_like': [
         'building', 'wall', 'tower', 'bridge', 'house', 'skyscraper',
-        'column', 'fence', 'rail', 'railing', 'window', 'windowpane',
-        'door', 'arcade', 'bannister', 'stairway', 'stair', 'escalator',
-        'awning', 'balcony', 'base', 'ceiling', 'cornice', 'counter',
-        'curb', 'dome', 'elevator', 'fireplace', 'floor', 'floor_mat',
-        'grandstand', 'minibar', 'minifont', 'partition', 'pedestal',
-        'platform', 'pool', 'ramp', 'river', 'road', 'roof', 'sand',
-        'screen', 'shelf', 'shop', 'sink', 'sofa', 'stage', 'stand',
-        'street', 'table', 'terrace', 'toilet', 'towel', 'tub',
-        'vanity', 'video', 'wall', 'washer', 'wine', 'blind', 'board',
-        'bookcase', 'cabinet', 'case', 'chair', 'chest', 'climbing',
+        'column', 'fence', 'railing', 'windowpane', 'door',
+        'arcade', 'bannister', 'stairway', 'stair', 'escalator',
+        'awning', 'balcony', 'ceiling', 'cornice', 'dome', 'elevator',
+        'fireplace', 'grandstand', 'minibar', 'partition', 'pedestal',
+        'platform', 'ramp', 'roof', 'screen', 'shelf', 'shop', 'sink',
+        'sofa', 'stage', 'stand', 'street', 'table', 'terrace', 'toilet',
+        'vanity', 'blind', 'board', 'bookcase', 'cabinet', 'case',
+        'chest', 'climbing', 'counter', 'curtain', 'lamp', 'light',
+        'bench', 'stairs', 'step', 'stool', 'rack', 'tray', 'trolley',
+        'bed', 'couch', 'desk', 'mirror', 'computer', 'laptop',
+        'tv', 'phone', 'camera', 'printer', 'speaker', 'keyboard',
+        'food', 'fruit', 'vegetable', 'meat', 'fish', 'bread', 'cake',
+        'pizza', 'salad', 'sandwich', 'dessert', 'drink', 'bottle',
+        'cup', 'glass', 'plate', 'bowl', 'spoon', 'fork', 'knife',
+        'pillow', 'blanket', 'sheet', 'rug', 'carpet', 'mat', 'cushion',
+        'upholstery', 'banner', 'flag', 'flagpole', 'book', 'clock',
+        'bottle', 'vase', 'basket', 'pot', 'jar', 'hen', 'frisbee',
+        'skateboard', 'surfboard', 'snowboard', 'sports car', 'ambulance',
+        'minivan', 'taxi', 'train', 'tram', 'subway', 'helicopter',
+        'cart', 'wagon', 'trailer', 'scooter', 'skier',
     ],
     'sky_like': [
         'sky',
     ],
     'ground_like': [
-        'road, route', 'sidewalk, pavement', 'floor', 'earth, ground',
-        'path', 'field', 'sand', 'runway', 'land', 'terrain', 'grass',
-        'plant', 'tree', 'bush', 'hill', 'mountain', 'rock', 'stone',
-        'gravel', 'pavement', 'sidewalk', 'curb', 'crosswalk', 'lane',
-        'parking', 'rail track', 'railroad', 'ground', 'dirt', 'mud',
+        'road', 'sidewalk', 'floor', 'earth', 'path', 'field', 'sand',
+        'runway', 'land', 'terrain', 'gravel', 'pavement', 'curb',
+        'crosswalk', 'lane', 'parking', 'rail track', 'railroad',
+        'ground', 'dirt', 'mud', 'stairs', 'step',
     ],
     'vegetation_like': [
         'tree', 'grass', 'plant', 'flower', 'palm', 'bush', 'shrub',
         'fern', 'moss', 'weed', 'hedge', 'vine', 'lawn', 'meadow',
-        'forest', 'wood', 'branch', 'trunk', 'leaf', 'pollen',
+        'forest', 'wood', 'branch', 'trunk', 'leaf', 'hill', 'mountain',
+        'rock', 'stone', 'bathtub', 'pool', 'swimming pool',
     ],
     'water_like': [
-        'water', 'sea', 'river', 'lake', 'pool', 'pond', 'ocean',
+        'water', 'sea', 'river', 'lake', 'pond', 'ocean',
         'wave', 'fountain', 'ice', 'snow', 'glacier', 'waterfall',
     ],
     'vehicle_like': [
         'car', 'bus', 'truck', 'bicycle', 'boat', 'motorbike', 'van',
         'taxi', 'train', 'tram', 'subway', 'airplane', 'helicopter',
-        'ship', 'cart', 'wagon', 'trailer', 'motorbike', 'scooter',
+        'ship', 'cart', 'wagon', 'trailer', 'scooter', 'sports car',
+        'ambulance', 'minivan', 'skateboard', 'surfboard', 'snowboard',
     ],
     'human_like': [
         'person', 'people', 'man', 'woman', 'child', 'boy', 'girl',
-        'human', 'pedestrian', 'rider', 'surfer', 'skater',
-    ],
-    'furniture_like': [
-        'bed', 'chair', 'couch', 'table', 'desk', 'cabinet', 'shelf',
-        'mirror', 'window', 'door', 'lamp', 'light', 'screen', 'board',
-        'bench', 'bookcase', 'counter', 'curtain', 'pillow', 'sink',
-        'stairs', 'step', 'stool', 'rack', 'tray', 'trolley',
-    ],
-    'food_like': [
-        'food', 'fruit', 'vegetable', 'meat', 'fish', 'bread', 'cake',
-        'pizza', 'salad', 'sandwich', 'dessert', 'drink', 'bottle',
-        'cup', 'glass', 'plate', 'bowl', 'spoon', 'fork', 'knife',
-    ],
-    'electronics_like': [
-        'tv', 'monitor', 'screen', 'laptop', 'computer', 'keyboard',
-        'mouse', 'phone', 'camera', 'printer', 'speaker', 'lamp',
-    ],
-    'textile_like': [
-        'curtain', 'pillow', 'blanket', 'sheet', 'towel', 'rug',
-        'carpet', 'mat', 'cushion', 'upholstery',
+        'human', 'pedestrian', 'rider', 'surfer', 'skater', 'skier',
     ],
 }
 
 
 def normalize_label_name(name: str) -> str:
-    """Normalize label name for comparison.
+    """Normalize an ADE20K label name for coarse-group matching.
+
+    Handles:
+    - trailing spaces / uppercase: "Building ", "CEILING" -> "building"
+    - comma-separated synonyms: "building, edifice" -> "building"
+    - multi-word labels: "crosswalk" (no comma, keep as-is)
+    - hyphens and apostrophes: removed
 
     Args:
-        name: Label name (may contain commas, trailing spaces, etc.)
+        name: Label name from id2label
 
     Returns:
-        Normalized label name (lowercase, stripped)
+        Normalized primary label name (lowercase, comma-split, stripped)
     """
     if name is None:
         return ''
-    return str(name).lower().strip()
+    s = str(name).lower().strip()
+    # ADE20K format: "building, edifice", "road, route", "earth, ground"
+    if ',' in s:
+        s = s.split(',')[0].strip()
+    # Remove leading/trailing hyphens within word (e.g. "cross-walk" -> "cross walk")
+    # but keep internal hyphens as spaces for multi-word matching
+    # "swimming-pool" -> "swimming pool" so we can match "swimming pool" -> "pool"
+    s = s.replace('-', ' ')
+    return s
 
 
 def build_coarse_mapping(coarse_groups: Dict[str, List[str]] = None) -> Dict[str, str]:
@@ -219,13 +232,13 @@ def get_coarse_group(fine_label_id: int, id2label: Dict, coarse_mapping: Dict[st
     Returns:
         Coarse group name, or 'other:<original_label>' for unmapped labels
     """
-    label_name = id2label.get(fine_label_id, str(fine_label_id))
-    normalized = normalize_label_name(label_name)
+    raw_name = id2label.get(fine_label_id, str(fine_label_id))
+    normalized = normalize_label_name(raw_name)
 
     if normalized in coarse_mapping:
         return coarse_mapping[normalized]
     else:
-        return f'other:{label_name}'
+        return f'other:{raw_name}'
 
 
 # =============================================================================
@@ -274,29 +287,120 @@ class OneFormerSegStore:
         if not self.json_dir.exists():
             self.json_dir = None
 
-        # Load label map
-        label_map_path = self.oneformer_dir / "label_id_map.json"
-        if label_map_path.exists():
-            with open(label_map_path, 'r') as f:
-                self.id2label = json.load(f)
-        elif self.json_dir is not None:
-            # Try to load from first JSON file
-            json_files = list(self.json_dir.glob("*.json"))
-            if json_files:
-                with open(json_files[0], 'r') as f:
-                    data = json.load(f)
-                    self.id2label = data.get('id2label', {})
-            else:
-                self.id2label = {}
-                if self.verbose:
-                    print(f"WARNING: No label_id_map.json found, id2label may be incomplete")
-        else:
-            self.id2label = {}
-            if self.verbose:
-                print(f"WARNING: No json dir and no label_id_map.json, id2label may be incomplete")
+        # Load id2label from multiple possible sources / formats
+        self.id2label = self._load_id2label()
 
         # Build index for fast lookup
         self._build_index()
+
+    def _load_id2label(self) -> Dict[int, str]:
+        """Load id2label from multiple possible sources and formats.
+
+        Supports:
+          1. label_id_map.json: {"0": "building", "1": "road", ...} or
+                                {"0": {"name": "building"}, "1": {"name": "road"}}
+          2. OneFormer per-image JSON: {"id2label": {...}, ...}
+          3. ade20k_panoptic.json: {"0": {"isthing": ..., "name": "..."}, ...}
+          4. categories: [{"id": ..., "name": ...}, ...]
+
+        Returns:
+            Dict mapping int label ID to label name string.
+        """
+        sources = []
+
+        # Source 1: label_id_map.json at oneformer_dir root
+        label_map_path = self.oneformer_dir / "label_id_map.json"
+        if label_map_path.exists():
+            sources.append(('label_id_map.json', label_map_path))
+
+        # Source 2: metadata JSON at oneformer_dir root (e.g. from --meta-dir copy)
+        for name in ("id2label.json", "ade20k_id2label.json", "ade20k_panoptic.json"):
+            p = self.oneformer_dir / name
+            if p.exists():
+                sources.append((name, p))
+
+        # Source 3: first per-image json in json_dir
+        if self.json_dir and self.json_dir.exists():
+            json_files = sorted(self.json_dir.glob("*.json"))
+            if json_files:
+                sources.append(('first json_dir file', json_files[0]))
+
+        # Source 4: meta_dir passed during construction (stored in oneformer_dir if different)
+        for name in ("id2label.json", "ade20k_id2label.json", "ade20k_panoptic.json",
+                     "ade20k_semantic.json"):
+            p = self.oneformer_dir / name
+            if p.exists() and (label_map_path, p) not in sources:
+                sources.append((name, p))
+
+        for source_name, path in sources:
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    raw = json.load(f)
+            except Exception as e:
+                if self.verbose:
+                    print(f"  Failed to load {path}: {e}")
+                continue
+
+            id2label = self._parse_id2label(raw)
+            if id2label:
+                if self.verbose:
+                    sample = list(id2label.items())[:3]
+                    print(f"  Loaded id2label from {source_name} ({len(id2label)} labels)")
+                    print(f"    Sample: {sample}")
+                return id2label
+
+        if self.verbose:
+            print(f"  WARNING: Could not load id2label from any source")
+        return {}
+
+    @staticmethod
+    def _parse_id2label(raw) -> Optional[Dict[int, str]]:
+        """Parse raw JSON into id2label dict.
+
+        Handles:
+          - {"0": "building", "1": "road"}  (plain strings)
+          - {"0": {"name": "building"}, "1": {"name": "road"}}  (ADE20K panoptic format)
+          - {"0": {"isthing": ..., "name": "..."}, ...}  (OneFormer demo format)
+          - [{"id": 0, "name": "building"}, ...]  (categories list)
+          - {"id2label": {"0": "building", ...}}  (wrapped)
+
+        Returns:
+            Dict mapping int label ID to label name string, or None if unrecognized.
+        """
+        if not raw:
+            return None
+
+        # Unwrap if top-level key is "id2label"
+        if isinstance(raw, dict) and 'id2label' in raw:
+            raw = raw['id2label']
+
+        # Case 1: plain strings {"0": "building", "1": "road"}
+        if all(isinstance(v, str) for v in raw.values()):
+            return {int(k): v for k, v in raw.items()}
+
+        # Case 2: categories list [{"id": 0, "name": "building"}, ...]
+        if isinstance(raw, list):
+            result = {}
+            for item in raw:
+                if isinstance(item, dict) and 'id' in item and 'name' in item:
+                    result[int(item['id'])] = item['name']
+            if result:
+                return result
+
+        # Case 3: ADE20K panoptic / OneFormer demo format
+        # {"0": {"isthing": ..., "name": "..."}, ...}
+        # or {"0": {"name": "..."}, ...}
+        if isinstance(raw, dict):
+            result = {}
+            for k, v in raw.items():
+                if isinstance(v, dict) and 'name' in v:
+                    result[int(k)] = v['name']
+                elif isinstance(v, dict) and 'label' in v:
+                    result[int(k)] = v['label']
+            if result:
+                return result
+
+        return None
 
     def _build_index(self):
         """Build index for fast image-to-npz/json lookup.
@@ -671,16 +775,38 @@ def diagnose_matches_semantic(
     coarse_consistency_rate = coarse_consistent / num_valid if num_valid > 0 else 0.0
     coarse_error_rate = coarse_mismatch / num_valid if num_valid > 0 else 0.0
 
+    # Diagnostic: fine error but coarse correct (proves coarse mapping works)
+    fine_error_but_coarse_correct = int(((~fine_match) & coarse_match & valid_mask).sum())
+    fine_error_coarse_correct_rate = fine_error_but_coarse_correct / num_valid if num_valid > 0 else 0.0
+
+    # Count unknown coarse labels
+    unknown_counts = Counter()
+    seen_labels = Counter()
+    for lbl_id in labels0[valid_mask]:
+        lbl_name = id2label.get(lbl_id, str(lbl_id))
+        seen_labels[lbl_name] += 1
+        if get_coarse_group(lbl_id, id2label, coarse_mapping).startswith('other:'):
+            unknown_counts[normalize_label_name(lbl_name)] += 1
+    for lbl_id in labels1[valid_mask]:
+        lbl_name = id2label.get(lbl_id, str(lbl_id))
+        seen_labels[lbl_name] += 1
+        if get_coarse_group(lbl_id, id2label, coarse_mapping).startswith('other:'):
+            unknown_counts[normalize_label_name(lbl_name)] += 1
+
+    num_known_coarse_labels = len(seen_labels) - len(unknown_counts)
+    num_unknown_coarse_labels = len(unknown_counts)
+    unknown_label_top20 = [
+        {'label': l, 'count': c} for l, c in unknown_counts.most_common(20)
+    ]
+
     # Stratified analysis by confidence
     high_conf_stats = {}
     for thr in thresholds:
         high_conf_mask = valid_mask & (mconf >= thr)
         high_conf_count = high_conf_mask.sum()
-
         if high_conf_count > 0:
             hc_fine_consistent = (fine_match & high_conf_mask).sum()
             hc_coarse_consistent = (coarse_match & high_conf_mask).sum()
-
             high_conf_stats[f"{thr:.1f}"] = {
                 'count': int(high_conf_count),
                 'fine_consistent': int(hc_fine_consistent),
@@ -689,27 +815,28 @@ def diagnose_matches_semantic(
                 'coarse_consistency_rate': hc_coarse_consistent / high_conf_count,
             }
 
-    # Top mismatch pairs (fine label)
-    mismatch_indices = np.where(valid_mask & ~fine_match)[0]
+    # Fine label mismatch pairs
+    fine_mismatch_indices = np.where(valid_mask & ~fine_match)[0]
     fine_mismatch_pairs = Counter()
-    for idx in mismatch_indices:
-        label0_name = id2label.get(labels0[idx], str(labels0[idx]))
-        label1_name = id2label.get(labels1[idx], str(labels1[idx]))
-        pair = (label0_name, label1_name)
-        fine_mismatch_pairs[pair] += 1
-
+    for idx in fine_mismatch_indices:
+        l0 = id2label.get(labels0[idx], str(labels0[idx]))
+        l1 = id2label.get(labels1[idx], str(labels1[idx]))
+        fine_mismatch_pairs[(l0, l1)] += 1
     top_fine_mismatch_pairs = [
         {'label0': p[0], 'label1': p[1], 'count': c}
         for p, c in fine_mismatch_pairs.most_common(10)
     ]
 
-    # Top mismatch pairs (coarse)
+    # Coarse mismatch pairs
     coarse_mismatch_indices = np.where(valid_mask & ~coarse_match)[0]
     coarse_mismatch_pairs = Counter()
+    coarse_error_pairs = Counter()
     for idx in coarse_mismatch_indices:
-        pair = (coarse0[idx], coarse1[idx])
-        coarse_mismatch_pairs[pair] += 1
-
+        cg0, cg1 = coarse0[idx], coarse1[idx]
+        coarse_mismatch_pairs[(cg0, cg1)] += 1
+        l0 = id2label.get(labels0[idx], str(labels0[idx]))
+        l1 = id2label.get(labels1[idx], str(labels1[idx]))
+        coarse_error_pairs[(cg0, cg1, l0, l1)] += 1
     top_coarse_mismatch_pairs = [
         {'coarse0': p[0], 'coarse1': p[1], 'count': c}
         for p, c in coarse_mismatch_pairs.most_common(10)
@@ -729,9 +856,19 @@ def diagnose_matches_semantic(
         'coarse_error_count': int(coarse_mismatch),
         'coarse_consistency_rate': float(coarse_consistency_rate),
         'coarse_error_rate': float(coarse_error_rate),
+        # Diagnostic fields (prove coarse mapping is working)
+        'num_fine_error_but_coarse_correct': fine_error_but_coarse_correct,
+        'fine_error_coarse_correct_rate': float(fine_error_coarse_correct_rate),
+        'num_known_coarse_labels': num_known_coarse_labels,
+        'num_unknown_coarse_labels': num_unknown_coarse_labels,
+        'unknown_label_top20': unknown_label_top20,
         'high_conf_stats': high_conf_stats,
         'top_fine_mismatch_pairs': top_fine_mismatch_pairs,
         'top_coarse_mismatch_pairs': top_coarse_mismatch_pairs,
+        'coarse_error_pair_top20': [
+            {'coarse0': p[0], 'coarse1': p[1], 'fine0': p[2], 'fine1': p[3], 'count': c}
+            for p, c in coarse_error_pairs.most_common(20)
+        ],
     }
 
     # Optionally save per-match details
@@ -1021,6 +1158,33 @@ def aggregate_diagnostics(pair_results: List[Dict]) -> Dict:
     coarse_consistency_rate = total_coarse_consistent / total_valid if total_valid > 0 else 0.0
     coarse_error_rate = total_coarse_error / total_valid if total_valid > 0 else 0.0
 
+    # Aggregate diagnostic fields for coarse mapping verification
+    total_fine_error_but_coarse_correct = sum(
+        r.get('num_fine_error_but_coarse_correct', 0) for r in pair_results
+    )
+    # Weighted average of fine_error_coarse_correct_rate
+    weighted_fecc = sum(
+        r.get('fine_error_coarse_correct_rate', 0.0) * r.get('num_valid_semantic_matches', 0)
+        for r in pair_results
+    )
+    global_fine_error_coarse_correct_rate = (
+        weighted_fecc / total_valid if total_valid > 0 else 0.0
+    )
+
+    # Aggregate unknown labels across all pairs
+    from collections import Counter as _Counter
+    global_unknown_counts = _Counter()
+    for r in pair_results:
+        for entry in r.get('unknown_label_top20', []):
+            global_unknown_counts[entry['label']] += entry['count']
+    global_unknown_label_top20 = [
+        {'label': l, 'count': c} for l, c in global_unknown_counts.most_common(20)
+    ]
+
+    # Take max of per-pair known/unknown counts (they're per-dataset estimates)
+    global_num_known = max((r.get('num_known_coarse_labels', 0) for r in pair_results), default=0)
+    global_num_unknown = max((r.get('num_unknown_coarse_labels', 0) for r in pair_results), default=0)
+
     # Aggregate high-conf stats
     all_thresholds = set()
     for r in pair_results:
@@ -1041,10 +1205,9 @@ def aggregate_diagnostics(pair_results: List[Dict]) -> Dict:
         }
 
     # Aggregate top mismatch pairs
-    from collections import Counter
-
-    all_fine_mismatches = Counter()
-    all_coarse_mismatches = Counter()
+    all_fine_mismatches = _Counter()
+    all_coarse_mismatches = _Counter()
+    all_coarse_error_pairs = _Counter()
 
     for r in pair_results:
         for pair in r.get('top_fine_mismatch_pairs', []):
@@ -1053,6 +1216,9 @@ def aggregate_diagnostics(pair_results: List[Dict]) -> Dict:
         for pair in r.get('top_coarse_mismatch_pairs', []):
             key = (pair['coarse0'], pair['coarse1'])
             all_coarse_mismatches[key] += pair['count']
+        for pair in r.get('coarse_error_pair_top20', []):
+            key = (pair['coarse0'], pair['coarse1'], pair['fine0'], pair['fine1'])
+            all_coarse_error_pairs[key] += pair['count']
 
     global_top_fine_mismatch = [
         {'label0': p[0], 'label1': p[1], 'count': c}
@@ -1062,6 +1228,11 @@ def aggregate_diagnostics(pair_results: List[Dict]) -> Dict:
     global_top_coarse_mismatch = [
         {'coarse0': p[0], 'coarse1': p[1], 'count': c}
         for p, c in all_coarse_mismatches.most_common(20)
+    ]
+
+    global_coarse_error_pair_top20 = [
+        {'coarse0': p[0], 'coarse1': p[1], 'fine0': p[2], 'fine1': p[3], 'count': c}
+        for p, c in all_coarse_error_pairs.most_common(20)
     ]
 
     return {
@@ -1084,9 +1255,16 @@ def aggregate_diagnostics(pair_results: List[Dict]) -> Dict:
         'main_error_definition': 'coarse_error',
         'main_semantic_error_matches': total_coarse_error,
         'main_semantic_error_rate': coarse_error_rate,
+        # Coarse mapping diagnostic fields
+        'num_fine_error_but_coarse_correct': total_fine_error_but_coarse_correct,
+        'fine_error_coarse_correct_rate': global_fine_error_coarse_correct_rate,
+        'num_known_coarse_labels': global_num_known,
+        'num_unknown_coarse_labels': global_num_unknown,
+        'unknown_label_top20': global_unknown_label_top20,
         'global_high_conf_stats': global_high_conf,
         'global_top_fine_mismatch_pairs': global_top_fine_mismatch,
         'global_top_coarse_mismatch_pairs': global_top_coarse_mismatch,
+        'global_coarse_error_pair_top20': global_coarse_error_pair_top20,
     }
 
 
