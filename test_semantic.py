@@ -33,6 +33,7 @@ Environment Variables:
 import os
 import sys
 import json
+import csv
 from pathlib import Path
 from collections import defaultdict
 
@@ -40,12 +41,17 @@ import pytorch_lightning as pl
 import argparse
 import pprint
 from loguru import logger as loguru_logger
+from loguru import logger
 
 from src.config.default import get_cfg_defaults
 from src.utils.profiler import build_profiler
 
 from src.lightning.data import MultiSceneDataModule
 from src.lightning.lightning_loftr import PL_LoFTR
+
+from src.utils.misc import flattenList
+from src.utils.comm import gather
+from src.utils.metrics import aggregate_metrics
 
 import torch
 
@@ -227,62 +233,115 @@ class PL_LoFTR_Semantic(PL_LoFTR):
             val_metrics_4tb = aggregate_metrics(metrics, self.config.TRAINER.EPI_ERR_THR, config=self.config)
             logger.info('\n' + pprint.pformat(val_metrics_4tb))
 
-        # Semantic diagnostic output
-        if self.semantic_diag and self.trainer.global_rank == 0:
+        # Semantic diagnostic output: each rank writes its own file, then rank 0 merges
+        if self.semantic_diag:
             self._write_semantic_diagnostics()
 
     def _write_semantic_diagnostics(self):
-        """Write semantic diagnostic results to output directory."""
-        if not self._pair_diagnostics:
-            return
-
+        """Write semantic diagnostic results per-rank, then merge on rank 0."""
         if not self.semantic_output_dir:
             return
 
         from tools.semantic_covis.semantic_match_diagnostic import aggregate_diagnostics
 
-        # Write per-pair results
-        pair_jsonl_path = Path(self.semantic_output_dir) / "per_pair_semantic_diagnostic.jsonl"
-        with open(pair_jsonl_path, 'w') as f:
+        try:
+            rank = self.trainer.global_rank
+        except Exception:
+            rank = 0
+
+        out_dir = Path(self.semantic_output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # --- Each rank writes its own JSONL ---
+        rank_jsonl = out_dir / f"per_pair_semantic_diagnostic_rank{rank}.jsonl"
+        with open(rank_jsonl, 'w') as f:
             for diag in self._pair_diagnostics:
-                # Remove per_match data if not requested
                 if not self.semantic_save_per_match and 'per_match' in diag:
                     del diag['per_match']
                 f.write(json.dumps(diag) + '\n')
 
-        # Write CSV summary
-        pair_csv_path = Path(self.semantic_output_dir) / "per_pair_semantic_diagnostic.csv"
-        import csv
-        with open(pair_csv_path, 'w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=[
-                'pair_id', 'image0', 'image1', 'num_matches', 'num_valid',
-                'fine_consistency_rate', 'coarse_consistency_rate',
-                'fine_mismatch_rate', 'coarse_mismatch_rate'
-            ])
+        loguru_logger.info(f"[rank {rank}] Wrote {len(self._pair_diagnostics)} pairs to {rank_jsonl}")
+
+        # --- Rank 0 merges all ranks ---
+        if rank != 0:
+            return
+
+        # Warn if multi-GPU semantic diagnostic is used
+        try:
+            world_size = self.trainer.world_size
+        except Exception:
+            world_size = 1
+
+        if world_size > 1:
+            loguru_logger.warning(
+                f"Semantic diagnostic with DDP ({world_size} GPUs): "
+                f"merging rank JSONL files. If ranks are on separate nodes, "
+                f"you may need to manually merge the per_pair_semantic_diagnostic_rank*.jsonl files."
+            )
+
+        # Collect all pairs from all rank files
+        all_pairs = []
+        for r in range(world_size):
+            rjsonl = out_dir / f"per_pair_semantic_diagnostic_rank{r}.jsonl"
+            if not rjsonl.exists():
+                loguru_logger.warning(f"Missing rank file: {rjsonl}")
+                continue
+            with open(rjsonl, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        all_pairs.append(json.loads(line))
+
+        # Write merged JSONL
+        merged_jsonl = out_dir / "per_pair_semantic_diagnostic.jsonl"
+        with open(merged_jsonl, 'w') as f:
+            for diag in all_pairs:
+                f.write(json.dumps(diag) + '\n')
+
+        # Write CSV
+        csv_fields = [
+            'image0', 'image1',
+            'num_pred_matches', 'num_valid_semantic_matches', 'num_out_of_bounds',
+            'missing_segmentation',
+            'fine_consistent_count', 'fine_error_count',
+            'fine_consistency_rate', 'fine_error_rate',
+            'coarse_consistent_count', 'coarse_error_count',
+            'coarse_consistency_rate', 'coarse_error_rate',
+        ]
+        csv_path = out_dir / "per_pair_semantic_diagnostic.csv"
+        with open(csv_path, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=csv_fields, extrasaction='ignore')
             writer.writeheader()
-            for diag in self._pair_diagnostics:
-                row = {
-                    'pair_id': diag.get('pair_id', ''),
-                    'image0': diag.get('image0', ''),
-                    'image1': diag.get('image1', ''),
-                    'num_matches': diag.get('num_matches', 0),
-                    'num_valid': diag.get('num_valid', 0),
-                    'fine_consistency_rate': f"{diag.get('fine_consistency_rate', 0):.4f}",
-                    'coarse_consistency_rate': f"{diag.get('coarse_consistency_rate', 0):.4f}",
-                    'fine_mismatch_rate': f"{diag.get('fine_mismatch_rate', 0):.4f}",
-                    'coarse_mismatch_rate': f"{diag.get('coarse_mismatch_rate', 0):.4f}",
-                }
+            for diag in all_pairs:
+                row = {}
+                for field in csv_fields:
+                    val = diag.get(field, '')
+                    if isinstance(val, float):
+                        row[field] = f"{val:.4f}"
+                    else:
+                        row[field] = val
                 writer.writerow(row)
 
-        # Write global summary
-        summary = aggregate_diagnostics(self._pair_diagnostics)
-        summary_path = Path(self.semantic_output_dir) / "summary.json"
+        # Aggregate and write summary
+        summary = aggregate_diagnostics(all_pairs)
+        summary_path = out_dir / "summary.json"
         with open(summary_path, 'w') as f:
             json.dump(summary, f, indent=2)
 
+        # Log key metrics
         logger.info(f"Semantic diagnostic results written to {self.semantic_output_dir}")
-        logger.info(f"  Fine consistency rate: {summary.get('global_fine_consistency_rate', 0):.4f}")
-        logger.info(f"  Coarse consistency rate: {summary.get('global_coarse_consistency_rate', 0):.4f}")
+        logger.info(f"  Pairs: {summary['num_pairs_total']} total, "
+                     f"{summary['num_pairs_evaluated']} evaluated, "
+                     f"{summary['num_missing_segmentation_pairs']} missing seg, "
+                     f"{summary['num_unique_images']} unique images")
+        logger.info(f"  Matches: {summary['num_pred_matches_total']} predicted, "
+                     f"{summary['num_valid_semantic_matches']} valid semantic")
+        logger.info(f"  Fine:  consistency={summary['fine_consistency_rate']:.4f}, "
+                     f"error={summary['fine_error_rate']:.4f}")
+        logger.info(f"  Coarse: consistency={summary['coarse_consistency_rate']:.4f}, "
+                     f"error={summary['coarse_error_rate']:.4f}")
+        logger.info(f"  MAIN semantic error rate (coarse_error): "
+                     f"{summary['main_semantic_error_rate']:.4f}")
 
 
 def inplace_relu(m):

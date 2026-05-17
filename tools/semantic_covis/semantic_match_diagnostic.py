@@ -576,6 +576,7 @@ def diagnose_matches_semantic(
 
     num_matches = len(mkpts0)
     num_valid = valid_mask.sum()
+    num_out_of_bounds = int(num_matches - num_valid)
 
     # Fine label consistency
     fine_match = labels0 == labels1
@@ -589,11 +590,11 @@ def diagnose_matches_semantic(
     coarse_consistent = (coarse_match & valid_mask).sum()
     coarse_mismatch = num_valid - coarse_consistent
 
-    # Compute rates
+    # Compute rates (denominator = num_valid semantic matches)
     fine_consistency_rate = fine_consistent / num_valid if num_valid > 0 else 0.0
-    fine_mismatch_rate = fine_mismatch / num_valid if num_valid > 0 else 0.0
+    fine_error_rate = fine_mismatch / num_valid if num_valid > 0 else 0.0
     coarse_consistency_rate = coarse_consistent / num_valid if num_valid > 0 else 0.0
-    coarse_mismatch_rate = coarse_mismatch / num_valid if num_valid > 0 else 0.0
+    coarse_error_rate = coarse_mismatch / num_valid if num_valid > 0 else 0.0
 
     # Stratified analysis by confidence
     high_conf_stats = {}
@@ -641,16 +642,18 @@ def diagnose_matches_semantic(
 
     # Build result
     result = {
-        'num_matches': num_matches,
-        'num_valid': int(num_valid),
-        'fine_consistent': int(fine_consistent),
-        'fine_mismatch': int(fine_mismatch),
+        'num_pred_matches': num_matches,
+        'num_valid_semantic_matches': int(num_valid),
+        'num_out_of_bounds': num_out_of_bounds,
+        'missing_segmentation': False,
+        'fine_consistent_count': int(fine_consistent),
+        'fine_error_count': int(fine_mismatch),
         'fine_consistency_rate': float(fine_consistency_rate),
-        'fine_mismatch_rate': float(fine_mismatch_rate),
-        'coarse_consistent': int(coarse_consistent),
-        'coarse_mismatch': int(coarse_mismatch),
+        'fine_error_rate': float(fine_error_rate),
+        'coarse_consistent_count': int(coarse_consistent),
+        'coarse_error_count': int(coarse_mismatch),
         'coarse_consistency_rate': float(coarse_consistency_rate),
-        'coarse_mismatch_rate': float(coarse_mismatch_rate),
+        'coarse_error_rate': float(coarse_error_rate),
         'high_conf_stats': high_conf_stats,
         'top_fine_mismatch_pairs': top_fine_mismatch_pairs,
         'top_coarse_mismatch_pairs': top_coarse_mismatch_pairs,
@@ -729,11 +732,23 @@ def diagnose_batch(
     if mkpts0 is None or mkpts1 is None:
         return results
 
+    # Convert to numpy if needed
+    if hasattr(mkpts0, 'cpu'):
+        mkpts0 = mkpts0.detach().cpu().numpy()
+    if hasattr(mkpts1, 'cpu'):
+        mkpts1 = mkpts1.detach().cpu().numpy()
+    if mconf is not None and hasattr(mconf, 'cpu'):
+        mconf = mconf.detach().cpu().numpy()
+
     # Handle batch dimension
     if mkpts0.ndim == 3:
         mkpts0 = mkpts0[0]  # [M, 2]
         mkpts1 = mkpts1[0]
         mconf = mconf[0] if mconf is not None else np.ones(len(mkpts0))
+
+    # Ensure mconf exists
+    if mconf is None:
+        mconf = np.ones(len(mkpts0))
 
     # Get image paths
     image0_path = None
@@ -758,19 +773,20 @@ def diagnose_batch(
 
     if seg0 is None or seg1 is None:
         return [{
-            'num_matches': len(mkpts0),
-            'num_valid': 0,
-            'fine_consistent': 0,
-            'fine_mismatch': 0,
-            'fine_consistency_rate': 0.0,
-            'fine_mismatch_rate': 0.0,
-            'coarse_consistent': 0,
-            'coarse_mismatch': 0,
-            'coarse_consistency_rate': 0.0,
-            'coarse_mismatch_rate': 0.0,
+            'num_pred_matches': len(mkpts0),
+            'num_valid_semantic_matches': 0,
+            'num_out_of_bounds': 0,
             'missing_segmentation': True,
-            'image0': image0_path,
-            'image1': image1_path,
+            'fine_consistent_count': 0,
+            'fine_error_count': 0,
+            'fine_consistency_rate': 0.0,
+            'fine_error_rate': 0.0,
+            'coarse_consistent_count': 0,
+            'coarse_error_count': 0,
+            'coarse_consistency_rate': 0.0,
+            'coarse_error_rate': 0.0,
+            'image0': image0_path if isinstance(image0_path, str) else str(image0_path),
+            'image1': image1_path if isinstance(image1_path, str) else str(image1_path),
         }]
 
     # Determine coordinate mapping
@@ -840,29 +856,75 @@ def aggregate_diagnostics(pair_results: List[Dict]) -> Dict:
     """
     if not pair_results:
         return {
-            'num_pairs': 0,
-            'num_pairs_with_valid_semantic': 0,
-            'num_pairs_missing_segmentation': 0,
-            'total_matches': 0,
-            'total_valid_matches': 0,
-            'global_fine_consistency_rate': 0.0,
-            'global_fine_mismatch_rate': 0.0,
-            'global_coarse_consistency_rate': 0.0,
-            'global_coarse_mismatch_rate': 0.0,
+            'num_pairs_total': 0,
+            'num_pairs_evaluated': 0,
+            'num_unique_images': 0,
+            'num_pred_matches_total': 0,
+            'num_valid_semantic_matches': 0,
+            'num_out_of_bounds_matches': 0,
+            'num_missing_segmentation_pairs': 0,
+            'num_pairs_without_matches': 0,
+            'fine_consistent_matches': 0,
+            'fine_error_matches': 0,
+            'fine_consistency_rate': 0.0,
+            'fine_error_rate': 0.0,
+            'coarse_consistent_matches': 0,
+            'coarse_error_matches': 0,
+            'coarse_consistency_rate': 0.0,
+            'coarse_error_rate': 0.0,
+            'main_error_definition': 'coarse_error',
+            'main_semantic_error_matches': 0,
+            'main_semantic_error_rate': 0.0,
         }
 
     total_pairs = len(pair_results)
     missing_count = sum(1 for r in pair_results if r.get('missing_segmentation', False))
     valid_pairs = total_pairs - missing_count
 
-    total_matches = sum(r.get('num_matches', 0) for r in pair_results)
-    total_valid = sum(r.get('num_valid', 0) for r in pair_results)
+    # Count unique images
+    all_images = set()
+    for r in pair_results:
+        if 'image0' in r:
+            all_images.add(r['image0'])
+        if 'image1' in r:
+            all_images.add(r['image1'])
+    num_unique_images = len(all_images)
+
+    # Aggregate match counts (back-compat: try both old and new field names)
+    total_pred = sum(r.get('num_pred_matches', r.get('num_matches', 0)) for r in pair_results)
+    total_valid = sum(
+        r.get('num_valid_semantic_matches', r.get('num_valid', 0))
+        for r in pair_results
+    )
+    total_oob = sum(r.get('num_out_of_bounds', 0) for r in pair_results)
+    no_match_count = sum(
+        1 for r in pair_results
+        if r.get('num_pred_matches', r.get('num_matches', 0)) == 0
+    )
 
     # Aggregate consistency
-    total_fine_consistent = sum(r.get('fine_consistent', 0) for r in pair_results)
-    total_fine_mismatch = sum(r.get('fine_mismatch', 0) for r in pair_results)
-    total_coarse_consistent = sum(r.get('coarse_consistent', 0) for r in pair_results)
-    total_coarse_mismatch = sum(r.get('coarse_mismatch', 0) for r in pair_results)
+    total_fine_consistent = sum(
+        r.get('fine_consistent_count', r.get('fine_consistent', 0))
+        for r in pair_results
+    )
+    total_fine_error = sum(
+        r.get('fine_error_count', r.get('fine_mismatch', 0))
+        for r in pair_results
+    )
+    total_coarse_consistent = sum(
+        r.get('coarse_consistent_count', r.get('coarse_consistent', 0))
+        for r in pair_results
+    )
+    total_coarse_error = sum(
+        r.get('coarse_error_count', r.get('coarse_mismatch', 0))
+        for r in pair_results
+    )
+
+    # Rates (denominator = num_valid_semantic_matches)
+    fine_consistency_rate = total_fine_consistent / total_valid if total_valid > 0 else 0.0
+    fine_error_rate = total_fine_error / total_valid if total_valid > 0 else 0.0
+    coarse_consistency_rate = total_coarse_consistent / total_valid if total_valid > 0 else 0.0
+    coarse_error_rate = total_coarse_error / total_valid if total_valid > 0 else 0.0
 
     # Aggregate high-conf stats
     all_thresholds = set()
@@ -908,15 +970,25 @@ def aggregate_diagnostics(pair_results: List[Dict]) -> Dict:
     ]
 
     return {
-        'num_pairs': total_pairs,
-        'num_pairs_with_valid_semantic': valid_pairs,
-        'num_pairs_missing_segmentation': missing_count,
-        'total_matches': total_matches,
-        'total_valid_matches': total_valid,
-        'global_fine_consistency_rate': total_fine_consistent / total_valid if total_valid > 0 else 0.0,
-        'global_fine_mismatch_rate': total_fine_mismatch / total_valid if total_valid > 0 else 0.0,
-        'global_coarse_consistency_rate': total_coarse_consistent / total_valid if total_valid > 0 else 0.0,
-        'global_coarse_mismatch_rate': total_coarse_mismatch / total_valid if total_valid > 0 else 0.0,
+        'num_pairs_total': total_pairs,
+        'num_pairs_evaluated': valid_pairs,
+        'num_unique_images': num_unique_images,
+        'num_pred_matches_total': total_pred,
+        'num_valid_semantic_matches': total_valid,
+        'num_out_of_bounds_matches': total_oob,
+        'num_missing_segmentation_pairs': missing_count,
+        'num_pairs_without_matches': no_match_count,
+        'fine_consistent_matches': total_fine_consistent,
+        'fine_error_matches': total_fine_error,
+        'fine_consistency_rate': fine_consistency_rate,
+        'fine_error_rate': fine_error_rate,
+        'coarse_consistent_matches': total_coarse_consistent,
+        'coarse_error_matches': total_coarse_error,
+        'coarse_consistency_rate': coarse_consistency_rate,
+        'coarse_error_rate': coarse_error_rate,
+        'main_error_definition': 'coarse_error',
+        'main_semantic_error_matches': total_coarse_error,
+        'main_semantic_error_rate': coarse_error_rate,
         'global_high_conf_stats': global_high_conf,
         'global_top_fine_mismatch_pairs': global_top_fine_mismatch,
         'global_top_coarse_mismatch_pairs': global_top_coarse_mismatch,
