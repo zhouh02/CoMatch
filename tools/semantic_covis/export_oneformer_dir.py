@@ -293,19 +293,27 @@ class OneFormerSegmentation:
         # Forward
         outputs = self.model(**inputs)
 
-        # Post-process
-        result = self.processor.post_process_semantic_segmentation(
-            outputs,
-            target_sizes=[image.size[::-1]]  # PIL uses (w, h), we need (h, w)
-        )[0]
+        # Post-process via processor (or its image_processor)
+        # target_sizes must be (height, width)
+        target_size = (image.size[1], image.size[0])  # PIL: (w, h) -> (h, w)
+        try:
+            semantic_map = self.processor.post_process_semantic_segmentation(
+                outputs,
+                target_sizes=[target_size],
+            )[0]
+        except AttributeError:
+            semantic_map = self.processor.image_processor.post_process_semantic_segmentation(
+                outputs,
+                target_sizes=[target_size],
+            )[0]
 
-        # Get semantic map
-        semantic_label = result.cpu().numpy().astype(np.int32)
+        # Convert to numpy int32
+        semantic_label = semantic_map.detach().cpu().numpy().astype("int32")
 
-        # Create segment score map (use class probabilities as confidence)
-        class_scores = torch.softmax(outputs.logits[0], dim=0)
-        max_scores, _ = class_scores.max(dim=0)
-        segment_score = max_scores.cpu().numpy().astype(np.float32)
+        # Segment confidence: use uniform placeholder (OneFormer semantic output
+        # does not provide per-pixel class probabilities).  Score = 1.0 means
+        # all pixels are treated as valid.
+        segment_score = np.ones_like(semantic_label, dtype=np.float32)
 
         return {
             'semantic_label': semantic_label,
