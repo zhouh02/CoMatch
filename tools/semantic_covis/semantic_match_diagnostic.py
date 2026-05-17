@@ -30,6 +30,79 @@ from collections import Counter, defaultdict
 
 
 # =============================================================================
+# Path Normalization
+# =============================================================================
+
+
+def normalize_rel_image_path(x):
+    """Normalize an image path that may be wrapped in a list / repr string.
+
+    CoMatch batches with batch_size=1 often store paths as
+    ``('path.jpg',)`` or ``['path.jpg']`` which, when str()'d, become
+    ``"('path.jpg',)"`` or ``"['path.jpg']"``.  This function unwraps
+    them back to a plain string.
+
+    Args:
+        x: image path - str, list, tuple, numpy array, or repr-wrapped str
+
+    Returns:
+        Clean relative path string, e.g. ``"Undistorted_SfM/0022/images/xxx.jpg"``
+    """
+    import ast as _ast
+
+    # Tensor / numpy array -> list
+    if hasattr(x, "tolist") and not isinstance(x, str):
+        x = x.tolist()
+
+    # list / tuple -> first element
+    if isinstance(x, (list, tuple)):
+        if len(x) == 0:
+            return ""
+        x = x[0]
+        # recurse in case it's nested
+        if isinstance(x, (list, tuple)):
+            return normalize_rel_image_path(x)
+
+    if not isinstance(x, str):
+        x = str(x)
+
+    s = x.strip()
+
+    # "['xxx.jpg']" or "('xxx.jpg',)" -> unwrap
+    if s.startswith("[") or s.startswith("("):
+        try:
+            parsed = _ast.literal_eval(s)
+            if isinstance(parsed, (list, tuple)) and len(parsed) > 0:
+                s = str(parsed[0]).strip()
+        except Exception:
+            pass
+
+    # Strip any remaining quotes
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ("'", '"'):
+        s = s[1:-1]
+
+    return s
+
+
+def image_path_to_safe_stem(image_path: str) -> str:
+    """Convert an image path to the safe_stem used in OneFormer output filenames.
+
+    This must match the logic in export_oneformer_dir.py:
+        rel_stem = Path(rel_path).with_suffix("")
+        safe_stem = rel_stem.as_posix().replace("/", "_").replace("\\", "_")
+
+    For example:
+        "Undistorted_SfM/0022/images/427154679_de14c315f4_o.jpg"
+        -> "Undistorted_SfM_0022_images_427154679_de14c315f4_o"
+    """
+    p = Path(image_path)
+    rel_stem = p.with_suffix("")
+    # Use as_posix to get forward slashes on all platforms
+    safe_stem = rel_stem.as_posix().replace("/", "_").replace("\\", "_")
+    return safe_stem
+
+
+# =============================================================================
 # ADE20K Coarse Label Mapping
 # =============================================================================
 
@@ -197,15 +270,16 @@ class OneFormerSegStore:
 
         if not self.npz_dir.exists():
             raise ValueError(f"npz directory not found: {self.npz_dir}")
+        # json dir is optional - npz is the hard requirement
         if not self.json_dir.exists():
-            raise ValueError(f"json directory not found: {self.json_dir}")
+            self.json_dir = None
 
         # Load label map
         label_map_path = self.oneformer_dir / "label_id_map.json"
         if label_map_path.exists():
             with open(label_map_path, 'r') as f:
                 self.id2label = json.load(f)
-        else:
+        elif self.json_dir is not None:
             # Try to load from first JSON file
             json_files = list(self.json_dir.glob("*.json"))
             if json_files:
@@ -216,31 +290,31 @@ class OneFormerSegStore:
                 self.id2label = {}
                 if self.verbose:
                     print(f"WARNING: No label_id_map.json found, id2label may be incomplete")
+        else:
+            self.id2label = {}
+            if self.verbose:
+                print(f"WARNING: No json dir and no label_id_map.json, id2label may be incomplete")
 
         # Build index for fast lookup
         self._build_index()
 
     def _build_index(self):
-        """Build index for fast image-to-npz/json lookup."""
-        self._npz_index = {}  # path stem -> npz path
-        self._json_index = {}  # path stem -> json path
+        """Build index for fast image-to-npz/json lookup.
+
+        The index maps safe_stem (as produced by export_oneformer_dir.py)
+        to the actual npz/json file paths.
+        """
+        self._npz_index = {}  # safe_stem -> npz path
+        self._json_index = {}  # safe_stem -> json path
 
         # Index npz files
         for npz_file in self.npz_dir.glob("*.npz"):
-            stem = npz_file.stem
-            self._npz_index[stem] = npz_file
-            # Also store with path separators normalized
-            normalized = stem.replace('/', '_').replace('\\', '_')
-            if normalized != stem:
-                self._npz_index[normalized] = npz_file
+            self._npz_index[npz_file.stem] = npz_file
 
-        # Index json files
-        for json_file in self.json_dir.glob("*.json"):
-            stem = json_file.stem
-            self._json_index[stem] = json_file
-            normalized = stem.replace('/', '_').replace('\\', '_')
-            if normalized != stem:
-                self._json_index[normalized] = json_file
+        # Index json files (optional dir)
+        if self.json_dir and self.json_dir.exists():
+            for json_file in self.json_dir.glob("*.json"):
+                self._json_index[json_file.stem] = json_file
 
     def _resolve_path(self, image_path: str) -> Optional[Path]:
         """Resolve image path to actual file location.
@@ -272,50 +346,51 @@ class OneFormerSegStore:
     def _find_segmentation(self, image_path: str) -> Tuple[Optional[Path], Optional[Path]]:
         """Find corresponding npz and json files for an image.
 
+        The lookup strategy mirrors export_oneformer_dir.py's naming:
+            safe_stem = Path(rel_path).with_suffix("").as_posix()
+                           .replace("/", "_").replace("\\", "_")
+            npz_path = oneformer_dir / "npz" / f"{safe_stem}.npz"
+
         Args:
-            image_path: Path to the image
+            image_path: Path to the image (may be relative or absolute)
 
         Returns:
             Tuple of (npz_path, json_path) or (None, None) if not found
         """
-        path = Path(image_path)
+        # Normalize the input path first
+        clean_path = normalize_rel_image_path(image_path)
 
-        # Try different stem formats
-        stems_to_try = []
+        # Strategy 1: direct safe_stem lookup (matches export_oneformer_dir.py)
+        safe_stem = image_path_to_safe_stem(clean_path)
+        npz_path = self._npz_index.get(safe_stem)
+        if npz_path is not None:
+            json_path = self._json_index.get(safe_stem)
+            return npz_path, json_path
 
-        # 1. Original relative path (for MegaDepth style: Undistorted_SfM/0022/images/xxx.jpg)
+        # Strategy 2: if image_root is set, try stripping it to get relative path
         if self.image_root:
             try:
-                rel_path = path.relative_to(self.image_root)
-                stems_to_try.append(str(rel_path.with_suffix('')).replace('/', '_').replace('\\', '_'))
-                stems_to_try.append(str(rel_path.stem))
+                rel = Path(clean_path).relative_to(self.image_root)
+                safe_stem2 = image_path_to_safe_stem(str(rel))
+                npz_path = self._npz_index.get(safe_stem2)
+                if npz_path is not None:
+                    return npz_path, self._json_index.get(safe_stem2)
             except ValueError:
                 pass
 
-        # 2. Original path without extension
-        stems_to_try.append(str(path.with_suffix('')).replace('/', '_').replace('\\', '_'))
-        stems_to_try.append(path.stem)
-
-        # 3. Basename without extension
-        stems_to_try.append(path.name.replace(path.suffix, ''))
-        stems_to_try.append(path.stem.replace('/', '_').replace('\\', '_'))
-
-        # Try each stem
-        for stem in stems_to_try:
-            if stem in self._npz_index:
-                return self._npz_index[stem], self._json_index.get(stem)
-
-        # Fallback: basename search
-        basename = path.name.replace(path.suffix, '')
-        matches = [s for s in self._npz_index.keys() if basename in s]
-
-        if len(matches) > 1 and self.verbose:
-            print(f"WARNING: Multiple matches for '{basename}': {matches}")
-        elif len(matches) == 1:
+        # Strategy 3: basename fallback
+        basename = Path(clean_path).stem
+        matches = [s for s in self._npz_index.keys() if s.endswith(basename)]
+        if len(matches) == 1:
             return self._npz_index[matches[0]], self._json_index.get(matches[0])
+        elif len(matches) > 1 and self.verbose:
+            print(f"WARNING: Multiple npz matches for basename '{basename}': {matches}")
 
         if self.verbose:
-            print(f"WARNING: No segmentation found for: {image_path}")
+            expected = self.npz_dir / f"{safe_stem}.npz"
+            print(f"WARNING: No segmentation found for: {clean_path}")
+            print(f"  Expected: {expected}")
+            print(f"  Exists: {expected.exists()}")
 
         return None, None
 
@@ -750,28 +825,41 @@ def diagnose_batch(
     if mconf is None:
         mconf = np.ones(len(mkpts0))
 
-    # Get image paths
+    # Get image paths (normalize from batch format)
     image0_path = None
     image1_path = None
 
-    if 'image0_path' in batch:
-        image0_path = batch['image0_path']
-        image1_path = batch['image1_path']
-    elif 'pair_names' in batch:
+    if 'pair_names' in batch:
         pair_names = batch['pair_names']
         if isinstance(pair_names, (list, tuple)) and len(pair_names) >= 2:
             image0_path = pair_names[0]
             image1_path = pair_names[1]
+    elif 'image0_path' in batch:
+        image0_path = batch['image0_path']
+        image1_path = batch['image1_path']
+
+    # Normalize paths (unwrap list/repr wrappers)
+    if image0_path is not None:
+        image0_path = normalize_rel_image_path(image0_path)
+    if image1_path is not None:
+        image1_path = normalize_rel_image_path(image1_path)
 
     if image0_path is None or image1_path is None:
         print("WARNING: Could not determine image paths from batch")
         return results
 
+    # Helper to build expected npz path for debug output
+    def _expected_npz(img_path):
+        safe = image_path_to_safe_stem(img_path)
+        return str(seg_store.npz_dir / f"{safe}.npz")
+
     # Get segmentation data
-    seg0 = seg_store.get(image0_path) if isinstance(image0_path, str) else None
-    seg1 = seg_store.get(image1_path) if isinstance(image1_path, str) else None
+    seg0 = seg_store.get(image0_path)
+    seg1 = seg_store.get(image1_path)
 
     if seg0 is None or seg1 is None:
+        exp0 = _expected_npz(image0_path)
+        exp1 = _expected_npz(image1_path)
         return [{
             'num_pred_matches': len(mkpts0),
             'num_valid_semantic_matches': 0,
@@ -785,8 +873,14 @@ def diagnose_batch(
             'coarse_error_count': 0,
             'coarse_consistency_rate': 0.0,
             'coarse_error_rate': 0.0,
-            'image0': image0_path if isinstance(image0_path, str) else str(image0_path),
-            'image1': image1_path if isinstance(image1_path, str) else str(image1_path),
+            'image0': image0_path,
+            'image1': image1_path,
+            'image0_rel_path': image0_path,
+            'image1_rel_path': image1_path,
+            'expected_seg0_path': exp0,
+            'expected_seg1_path': exp1,
+            'exists_seg0': os.path.exists(exp0),
+            'exists_seg1': os.path.exists(exp1),
         }]
 
     # Determine coordinate mapping
@@ -835,8 +929,9 @@ def diagnose_batch(
         save_all_matches=save_all_matches,
     )
 
-    result['image0'] = image0_path if isinstance(image0_path, str) else str(image0_path)
-    result['image1'] = image1_path if isinstance(image1_path, str) else str(image1_path)
+    result['image0'] = image0_path
+    result['image1'] = image1_path
+    result['missing_segmentation'] = False
 
     return [result]
 
