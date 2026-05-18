@@ -907,6 +907,7 @@ def diagnose_batch(
     boundary_radius: int = 0,
     save_all_matches: bool = False,
     save_per_match: bool = None,
+    target_pairs: Dict[str, dict] = None,
 ) -> List[Dict]:
     """Diagnose semantic consistency for a batch of matches.
 
@@ -926,6 +927,9 @@ def diagnose_batch(
         save_all_matches: If True, save per-match details (preferred name)
         save_per_match: Deprecated alias of save_all_matches (kept for
             backward compatibility)
+        target_pairs: Dict mapping canonical pair_key -> {image0, image1, ...}
+                     If provided, only pairs in this dict will have per-match saved.
+                     Other pairs get per-pair stats only.
 
     Returns:
         List of diagnostic results, one per pair in the batch
@@ -980,6 +984,15 @@ def diagnose_batch(
         image0_path = normalize_rel_image_path(image0_path)
     if image1_path is not None:
         image1_path = normalize_rel_image_path(image1_path)
+
+    # Build canonical pair key for target pair matching
+    pair_key = None
+    is_target_pair = False
+    if image0_path and image1_path:
+        norm0, norm1 = sorted([image0_path, image1_path])
+        pair_key = f"{norm0}|||{norm1}"
+        if target_pairs and pair_key in target_pairs:
+            is_target_pair = True
 
     if image0_path is None or image1_path is None:
         print("WARNING: Could not determine image paths from batch")
@@ -1052,6 +1065,9 @@ def diagnose_batch(
         mkpts1_mapped = mkpts1
 
     # Run diagnosis
+    # Only save per-match if explicitly requested AND this is a target pair
+    should_save_per_match = save_all_matches and is_target_pair
+
     result = diagnose_matches_semantic(
         mkpts0_mapped,
         mkpts1_mapped,
@@ -1063,12 +1079,34 @@ def diagnose_batch(
         score_thresh=score_thresh,
         thresholds=thresholds,
         boundary_radius=boundary_radius,
-        save_all_matches=save_all_matches,
+        save_all_matches=should_save_per_match,
     )
 
     result['image0'] = image0_path
     result['image1'] = image1_path
+    result['pair_key'] = pair_key
     result['missing_segmentation'] = False
+
+    # If this is a target pair and we need enhanced per-match data, add seg coordinates
+    if should_save_per_match and 'per_match' in result:
+        # Add segmentation-mapped coordinates to per_match entries
+        for entry in result['per_match']:
+            idx = entry['idx']
+            if idx < len(mkpts0_mapped):
+                entry['seg_x0'] = float(mkpts0_mapped[idx, 0])
+                entry['seg_y0'] = float(mkpts0_mapped[idx, 1])
+                entry['seg_x1'] = float(mkpts1_mapped[idx, 0])
+                entry['seg_y1'] = float(mkpts1_mapped[idx, 1])
+            # Add label names for convenience
+            label_id0 = entry.get('label0')
+            label_id1 = entry.get('label1')
+            if label_id0 is not None and label_id0 >= 0:
+                entry['label0_name'] = seg0['id2label'].get(label_id0, str(label_id0))
+            if label_id1 is not None and label_id1 >= 0:
+                entry['label1_name'] = seg1['id2label'].get(label_id1, str(label_id1))
+            # Add fine/coarse consistency as booleans for visualization
+            entry['fine_consistent'] = bool(entry.get('fine_match', False))
+            entry['coarse_consistent'] = bool(entry.get('coarse_match', False))
 
     return [result]
 

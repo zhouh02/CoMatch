@@ -120,6 +120,8 @@ def parse_args():
                         help='Minimum segment score for valid sample')
     parser.add_argument('--semantic-save-per-match', action='store_true', default=False,
                         help='Save per-match details (can be large)')
+    parser.add_argument('--semantic-target-pair-list', type=str, default=None,
+                        help='Path to JSONL with target pairs. Only these pairs will have per-match saved.')
 
     parser = pl.Trainer.add_argparse_args(parser)
     return parser.parse_args()
@@ -130,13 +132,20 @@ class PL_LoFTR_Semantic(PL_LoFTR):
 
     def __init__(self, config, pretrained_ckpt=None, profiler=None, dump_dir=None,
                  semantic_diag=False, oneformer_dir=None, semantic_output_dir=None,
-                 semantic_score_thresh=0.0, semantic_save_per_match=False):
+                 semantic_score_thresh=0.0, semantic_save_per_match=False,
+                 semantic_target_pair_list=None):
         super().__init__(config, pretrained_ckpt, profiler, dump_dir)
 
         self.semantic_diag = semantic_diag
         self.semantic_output_dir = semantic_output_dir
         self.semantic_score_thresh = semantic_score_thresh
         self.semantic_save_per_match = semantic_save_per_match
+        self.semantic_target_pair_list = semantic_target_pair_list
+
+        # Load target pairs if provided
+        self._target_pairs = None
+        if semantic_target_pair_list and os.path.exists(semantic_target_pair_list):
+            self._load_target_pairs(semantic_target_pair_list)
 
         # Initialize semantic store lazily
         self._seg_store = None
@@ -163,6 +172,31 @@ class PL_LoFTR_Semantic(PL_LoFTR):
             loguru_logger.info(f"  OneFormer dir: {oneformer_dir}")
             loguru_logger.info(f"  Output dir: {semantic_output_dir or 'None'}")
             loguru_logger.info(f"  Score thresh: {semantic_score_thresh}")
+            if self._target_pairs:
+                loguru_logger.info(f"  Target pairs: {len(self._target_pairs)} loaded from {semantic_target_pair_list}")
+
+    def _load_target_pairs(self, target_pair_list_path: str) -> None:
+        """Load target pairs from JSONL file for selective per-match saving."""
+        import json
+        self._target_pairs = {}
+        try:
+            with open(target_pair_list_path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    entry = json.loads(line)
+                    # Build canonical pair key matching diagnose_batch format:
+                    # sorted(image0, image1) joined by |||
+                    norm0 = entry.get('image0', '')
+                    norm1 = entry.get('image1', '')
+                    a, b = sorted([norm0, norm1])
+                    key = f"{a}|||{b}"
+                    self._target_pairs[key] = entry
+            loguru_logger.info(f"Loaded {len(self._target_pairs)} target pairs")
+        except Exception as e:
+            loguru_logger.warning(f"Failed to load target pairs: {e}")
+            self._target_pairs = None
 
     def test_step(self, batch, batch_idx):
         # Run standard matcher
@@ -203,6 +237,7 @@ class PL_LoFTR_Semantic(PL_LoFTR):
                     self._seg_store,
                     score_thresh=self.semantic_score_thresh,
                     save_all_matches=self.semantic_save_per_match,
+                    target_pairs=self._target_pairs,
                 )
 
                 # Add pair info to results
@@ -254,13 +289,47 @@ class PL_LoFTR_Semantic(PL_LoFTR):
 
         # --- Each rank writes its own JSONL ---
         rank_jsonl = out_dir / f"per_pair_semantic_diagnostic_rank{rank}.jsonl"
+        rank_per_match_jsonl = out_dir / f"per_match_semantic_diagnostic_rank{rank}.jsonl"
+
+        # Write per-match JSONL first (before per_match is deleted from dicts)
+        with open(rank_per_match_jsonl, 'w') as f:
+            for diag in self._pair_diagnostics:
+                if 'per_match' in diag:
+                    for pm in diag['per_match']:
+                        record = {
+                            'pair_key': diag.get('pair_key', ''),
+                            'image0': diag.get('image0', ''),
+                            'image1': diag.get('image1', ''),
+                            'match_idx': pm.get('idx', 0),
+                            'x0': pm.get('pt0', [None, None])[0] if pm.get('pt0') else None,
+                            'y0': pm.get('pt0', [None, None])[1] if pm.get('pt0') else None,
+                            'x1': pm.get('pt1', [None, None])[0] if pm.get('pt1') else None,
+                            'y1': pm.get('pt1', [None, None])[1] if pm.get('pt1') else None,
+                            'seg_x0': pm.get('seg_x0'),
+                            'seg_y0': pm.get('seg_y0'),
+                            'seg_x1': pm.get('seg_x1'),
+                            'seg_y1': pm.get('seg_y1'),
+                            'score': pm.get('conf'),
+                            'label_id0': pm.get('label0'),
+                            'label_id1': pm.get('label1'),
+                            'label0': pm.get('label0_name', ''),
+                            'label1': pm.get('label1_name', ''),
+                            'coarse0': pm.get('coarse0', ''),
+                            'coarse1': pm.get('coarse1', ''),
+                            'fine_consistent': pm.get('fine_consistent', False),
+                            'coarse_consistent': pm.get('coarse_consistent', False),
+                        }
+                        f.write(json.dumps(record) + '\n')
+
+        # Write per-pair JSONL (strips per_match to avoid large files)
         with open(rank_jsonl, 'w') as f:
             for diag in self._pair_diagnostics:
-                if not self.semantic_save_per_match and 'per_match' in diag:
+                if 'per_match' in diag:
                     del diag['per_match']
                 f.write(json.dumps(diag) + '\n')
 
         loguru_logger.info(f"[rank {rank}] Wrote {len(self._pair_diagnostics)} pairs to {rank_jsonl}")
+        loguru_logger.info(f"[rank {rank}] Wrote per-match details to {rank_per_match_jsonl}")
 
         # --- Rank 0 merges all ranks ---
         if rank != 0:
@@ -297,6 +366,23 @@ class PL_LoFTR_Semantic(PL_LoFTR):
         with open(merged_jsonl, 'w') as f:
             for diag in all_pairs:
                 f.write(json.dumps(diag) + '\n')
+
+        # --- Merge per-match JSONL files ---
+        merged_per_match_jsonl = out_dir / "per_match_semantic_diagnostic.jsonl"
+        all_per_match = []
+        for r in range(world_size):
+            rjsonl = out_dir / f"per_match_semantic_diagnostic_rank{r}.jsonl"
+            if not rjsonl.exists():
+                continue
+            with open(rjsonl, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        all_per_match.append(json.loads(line))
+        with open(merged_per_match_jsonl, 'w') as f:
+            for rec in all_per_match:
+                f.write(json.dumps(rec) + '\n')
+        loguru_logger.info(f"Merged {len(all_per_match)} per-match records to {merged_per_match_jsonl}")
 
         # Write CSV
         csv_fields = [
@@ -360,6 +446,7 @@ if __name__ == '__main__':
     semantic_output_dir = args.semantic_output_dir
     semantic_score_thresh = args.semantic_score_thresh
     semantic_save_per_match = args.semantic_save_per_match
+    semantic_target_pair_list = args.semantic_target_pair_list
 
     # init default-cfg and merge it with the main- and data-cfg
     config = get_cfg_defaults()
@@ -434,6 +521,7 @@ if __name__ == '__main__':
             semantic_output_dir=semantic_output_dir,
             semantic_score_thresh=semantic_score_thresh,
             semantic_save_per_match=semantic_save_per_match,
+            semantic_target_pair_list=semantic_target_pair_list,
         )
     else:
         model = PL_LoFTR(config, pretrained_ckpt=args.ckpt_path, profiler=profiler, dump_dir=args.dump_dir)
