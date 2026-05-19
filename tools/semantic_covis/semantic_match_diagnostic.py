@@ -1065,8 +1065,9 @@ def diagnose_batch(
         mkpts1_mapped = mkpts1
 
     # Run diagnosis
-    # Only save per-match if explicitly requested AND this is a target pair
-    should_save_per_match = save_all_matches and is_target_pair
+    # Only save per-match if explicitly requested AND (this is a target pair OR no target_pairs specified)
+    # When target_pairs is None/empty, save per-match for all pairs
+    should_save_per_match = save_all_matches and (is_target_pair or target_pairs is None or len(target_pairs) == 0)
 
     result = diagnose_matches_semantic(
         mkpts0_mapped,
