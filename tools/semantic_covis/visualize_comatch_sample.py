@@ -47,9 +47,14 @@ def main():
     # Config (same as test.py / PL_LoFTR)
     config = get_cfg_defaults()
     config.merge_from_file('configs/loftr/comatch_full.py')
+    config.merge_from_file('configs/data/megadepth_test_1500.py')
     config.LOFTR.MATCH_COARSE.THR = args.thr
     config.LOFTR.HALF = False
     config.LOFTR.MP = False
+    if args.megasize is not None:
+        config.DATASET.MGDPT_IMG_RESIZE = args.megasize
+    # NPE config (same as outdoor.sh --npe)
+    config.LOFTR.COARSE.NPE = [832, 832, config.DATASET.MGDPT_IMG_RESIZE, config.DATASET.MGDPT_IMG_RESIZE]
     _config = lower_config(config)
     loftr_cfg = lower_config(_config['loftr'])
 
