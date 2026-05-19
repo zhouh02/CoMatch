@@ -309,6 +309,9 @@ def draw_match_lines(
     matches: List[Dict],
     max_lines: int = 500,
     error_only: bool = False,
+    img_left_size: Tuple[int, int] = None,
+    img_right_size: Tuple[int, int] = None,
+    coord_space: str = "auto",
 ) -> np.ndarray:
     """Draw match lines on concatenated left-right image.
 
@@ -318,6 +321,12 @@ def draw_match_lines(
         matches: List of match dicts with seg_x0, seg_y0, seg_x1, seg_y1, coarse_consistent
         max_lines: Maximum number of lines to draw
         error_only: If True, only draw coarse error lines
+        img_left_size: Actual size of left image (H, W) for coordinate validation
+        img_right_size: Actual size of right image (H, W) for coordinate validation
+        coord_space: Coordinate space: "auto", "image", "seg", or "normalized"
+                    - "auto": automatically detect based on coordinate ranges
+                    - "image": coordinates are in image pixel space
+                    - "seg": coordinates are in segmentation space
 
     Returns:
         Concatenated image with match lines drawn
@@ -335,12 +344,56 @@ def draw_match_lines(
         img_right = cv2.resize(img_right, (img_right.shape[1], h))
 
     w_left = img_left.shape[1]
-    w_right = img_right.shape[1]
+    w_right = img_right.shape[2] if img_right.ndim == 3 else img_right.shape[1]
 
     # Concatenate
     canvas = np.zeros((h, w_left + w_right, 3), dtype=np.uint8)
     canvas[:h, :w_left] = img_left
     canvas[:h, w_left:] = img_right
+
+    # Detect coordinate space and scale if needed
+    if coord_space == "auto" and matches:
+        # Analyze coordinate ranges to determine coordinate space
+        all_x0 = [m['seg_x0'] for m in matches if 'seg_x0' in m]
+        all_y0 = [m['seg_y0'] for m in matches if 'seg_y0' in m]
+        all_x1 = [m['seg_x1'] for m in matches if 'seg_x1' in m]
+        all_y1 = [m['seg_y1'] for m in matches if 'seg_y1' in m]
+
+        x_max = max(max(all_x0), max(all_x1)) if all_x0 and all_x1 else 0
+        y_max = max(max(all_y0), max(all_y1)) if all_y0 and all_y1 else 0
+
+        # Check if coordinates fit in image dimensions
+        img_fits_x = x_max <= w_left
+        img_fits_y = y_max <= h
+
+        # Check if coordinates fit in segmentation dimensions (if provided)
+        seg_fits_x = img_left_size and x_max <= img_left_size[1]
+        seg_fits_y = img_left_size and y_max <= img_left_size[0]
+        seg_fits = seg_fits_x and seg_fits_y
+
+        # Determine coordinate space
+        if img_fits_x and img_fits_y:
+            coord_space = "image"
+            scale_x = scale_y = 1.0
+        elif seg_fits:
+            coord_space = "seg"
+            scale_x = scale_y = 1.0
+        else:
+            # Coordinates are from different resolution, need to scale
+            # This happens when seg coords are in OneFormer output space
+            # while images are in original input space
+            if img_left_size:
+                # Scale from seg space to image space
+                seg_w = img_left_size[1] if img_left_size else w_left
+                seg_h = img_left_size[0] if img_left_size else h
+                scale_x = seg_w / max(x_max, 1)
+                scale_y = seg_h / max(y_max, 1)
+            else:
+                scale_x = scale_y = 1.0
+
+        print(f"  Coord detection: space={coord_space}, scale=({scale_x:.3f}, {scale_y:.3f})")
+    else:
+        scale_x = scale_y = 1.0
 
     # Filter matches
     if error_only:
@@ -395,6 +448,12 @@ def draw_match_lines(
         if x0 is None or y0 is None or x1 is None or y1 is None:
             continue
 
+        # Apply scaling to coordinates if needed
+        x0_scaled = x0 * scale_x
+        y0_scaled = y0 * scale_y
+        x1_scaled = x1 * scale_x
+        y1_scaled = y1 * scale_y
+
         # Determine color
         if not match.get('coarse_consistent', True):
             color = COLOR_COARSE_ERROR  # Red
@@ -404,8 +463,8 @@ def draw_match_lines(
             color = COLOR_COARSE_CONSISTENT  # Green
 
         # Draw line: left point in left image, right point shifted to right image
-        pt1 = (int(x0), int(y0))
-        pt2 = (int(x1) + w_left, int(y1))  # shift x for right image
+        pt1 = (int(x0_scaled), int(y0_scaled))
+        pt2 = (int(x1_scaled) + w_left, int(y1_scaled))  # shift x for right image
 
         cv2.line(canvas, pt1, pt2, color, 1, cv2.LINE_AA)
 
@@ -569,9 +628,55 @@ def visualize_pair(
         print(f"Failed to load image: {image1}")
         return False
 
+    # Get image dimensions for coordinate validation
+    img0_h, img0_w = img0.shape[:2]
+    img1_h, img1_w = img1.shape[:2]
+
     # Load segmentation
     seg0 = load_oneformer_segmentation(image0, oneformer_dir)
     seg1 = load_oneformer_segmentation(image1, oneformer_dir)
+
+    # Get segmentation dimensions for coordinate validation
+    seg0_h, seg0_w = seg0.shape[:2] if seg0 is not None else (0, 0)
+    seg1_h, seg1_w = seg1.shape[:2] if seg1 is not None else (0, 0)
+
+    # Check coordinate ranges and report size info
+    coord_warnings = []
+    if matches:
+        x0_min = min(m['seg_x0'] for m in matches if 'seg_x0' in m)
+        x0_max = max(m['seg_x0'] for m in matches if 'seg_x0' in m)
+        y0_min = min(m['seg_y0'] for m in matches if 'seg_y0' in m)
+        y0_max = max(m['seg_y0'] for m in matches if 'seg_y0' in m)
+
+        x1_min = min(m['seg_x1'] for m in matches if 'seg_x1' in m)
+        x1_max = max(m['seg_x1'] for m in matches if 'seg_x1' in m)
+        y1_min = min(m['seg_y1'] for m in matches if 'seg_y1' in m)
+        y1_max = max(m['seg_y1'] for m in matches if 'seg_y1' in m)
+
+        # Check if coordinates are in segmentation space vs image space
+        img0_out = (x0_max >= img0_w or y0_max >= img0_h or x0_min < 0 or y0_min < 0)
+        img1_out = (x1_max >= img1_w or y1_max >= img1_h or x1_min < 0 or y1_min < 0)
+        seg0_out = (x0_max >= seg0_w or y0_max >= seg0_h)
+        seg1_out = (x1_max >= seg1_w or y1_max >= seg1_h)
+
+        coord_warnings.append(f"  img0 size: {img0_w}x{img0_h}, seg0 size: {seg0_w}x{seg0_h}")
+        coord_warnings.append(f"  img1 size: {img1_w}x{img1_h}, seg1 size: {seg1_w}x{seg1_h}")
+        coord_warnings.append(f"  seg_x0 range: [{x0_min:.1f}, {x0_max:.1f}], seg_y0 range: [{y0_min:.1f}, {y0_max:.1f}]")
+        coord_warnings.append(f"  seg_x1 range: [{x1_min:.1f}, {x1_max:.1f}], seg_y1 range: [{y1_min:.1f}, {y1_max:.1f}]")
+
+        if img0_out and seg0_out and not (img0_out and seg0_out):
+            coord_warnings.append(f"  WARNING: Coordinates exceed image0 dims but fit seg0!")
+        if img1_out and seg1_out and not (img1_out and seg1_out):
+            coord_warnings.append(f"  WARNING: Coordinates exceed image1 dims but fit seg1!")
+
+        # Check if coordinates match segmentation
+        if seg0_w > 0 and (x0_max <= seg0_w and y0_max <= seg0_h):
+            coord_warnings.append(f"  INFO: Coordinates appear to be in segmentation space (seg0)")
+        elif img0_w > 0 and (x0_max <= img0_w and y0_max <= img0_h):
+            coord_warnings.append(f"  INFO: Coordinates appear to be in image space (img0)")
+
+        for warn in coord_warnings:
+            print(warn)
 
     # Build stats
     stats = build_pair_stats(matches)
@@ -581,10 +686,13 @@ def visualize_pair(
         img0, img1, matches,
         max_lines=max_lines,
         error_only=False,
+        img_left_size=(img0_h, img0_w),
+        img_right_size=(img1_h, img1_w),
     )
 
     title = f"Pair {rank_str}: {Path(image0).name} <-> {Path(image1).name}"
     title += f" | matches={stats['num_matches']} | fine_err={stats['fine_error_rate']:.2f} | coarse_err={stats['coarse_error_rate']:.2f}"
+    title += f" | img0:{img0_w}x{img0_h} seg0:{seg0_w}x{seg0_h}"
     matches_canvas = add_title_bar(matches_canvas, title)
 
     cv2.imwrite(str(pair_dir / "matches_all.png"), matches_canvas)
@@ -594,6 +702,8 @@ def visualize_pair(
         img0, img1, matches,
         max_lines=max_lines,
         error_only=True,
+        img_left_size=(img0_h, img0_w),
+        img_right_size=(img1_h, img1_w),
     )
 
     title_err = f"Coarse Error Matches Only (n={stats['coarse_error_count']})"
@@ -623,6 +733,10 @@ def visualize_pair(
         'image0': image0,
         'image1': image1,
         'pair_key': pair_info.get('pair_key', ''),
+        'img0_size': [img0_h, img0_w],
+        'img1_size': [img1_h, img1_w],
+        'seg0_size': [seg0_h, seg0_w],
+        'seg1_size': [seg1_h, seg1_w],
         **stats,
     }
 
@@ -789,7 +903,11 @@ def main():
         # Check skip-existing flag
         if args.skip_existing:
             rank_str = pair.get('rank', 0)
-            pair_dir = output_dir / f"pair_{rank_str:03d}"
+            # Must match the path used in visualize_pair
+            if rank_subdir:
+                pair_dir = output_dir / rank_subdir / f"pair_{rank_str:03d}"
+            else:
+                pair_dir = output_dir / f"pair_{rank_str:03d}"
             if pair_dir.exists() and (pair_dir / "pair_info.json").exists():
                 skipped_count += 1
                 continue

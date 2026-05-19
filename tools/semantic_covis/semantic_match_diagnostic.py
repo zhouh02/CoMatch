@@ -1088,6 +1088,41 @@ def diagnose_batch(
     result['pair_key'] = pair_key
     result['missing_segmentation'] = False
 
+    # Save coordinate system information for visualization
+    # mkpts0_f/mkpts1_f are in processed image coords (batch['hw0_i'])
+    # seg0/seg1 are in OneFormer segmentation coords
+    result['hw0_i'] = list(match_hw)  # CoMatch input image size [H, W]
+    result['hw1_i'] = list(match_hw)  # CoMatch input image size for image1
+    result['seg_hw0'] = list(seg_hw)  # OneFormer segmentation size [H, W]
+    result['seg_hw1'] = (seg1['height'], seg1['width'])  # OneFormer segmentation size for image1
+
+    # Also save original image size from segmentation if available
+    result['orig_hw0'] = seg0.get('orig_hw', list(seg_hw))
+    result['orig_hw1'] = seg1.get('orig_hw', (seg1['height'], seg1['width']))
+
+    # Save whether coordinate mapping was needed
+    result['coord_mapped'] = (match_hw != seg_hw)
+    if match_hw != seg_hw:
+        result['coord_scale'] = {
+            'scale0_x': seg_hw[1] / match_hw[1],  # seg_w / match_w
+            'scale0_y': seg_hw[0] / match_hw[0],  # seg_h / match_h
+            'scale1_x': seg1['width'] / match_hw[1] if match_hw[1] != 0 else 1.0,
+            'scale1_y': seg1['height'] / match_hw[0] if match_hw[0] != 0 else 1.0,
+        }
+
+    # Save scale0/scale1 from batch if available (original image / processed image ratio)
+    # scale0/scale1 are [scale_w, scale_h] = [orig_w/processed_w, orig_h/processed_h]
+    if 'scale0' in batch:
+        scale0 = batch['scale0']
+        if torch.is_tensor(scale0):
+            scale0 = scale0.cpu().numpy().tolist()
+        result['batch_scale0'] = scale0
+    if 'scale1' in batch:
+        scale1 = batch['scale1']
+        if torch.is_tensor(scale1):
+            scale1 = scale1.cpu().numpy().tolist()
+        result['batch_scale1'] = scale1
+
     # If this is a target pair and we need enhanced per-match data, add seg coordinates
     if should_save_per_match and 'per_match' in result:
         # Add segmentation-mapped coordinates to per_match entries

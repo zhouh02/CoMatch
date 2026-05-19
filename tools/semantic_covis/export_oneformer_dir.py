@@ -443,7 +443,7 @@ def export_oneformer_dir(
             # Run segmentation
             result = segmentor.segment_image(img_path, target_size=target_size)
 
-            # Save npz
+            # Save npz with complete size information for coordinate mapping
             np.savez(
                 npz_path,
                 panoptic_seg=result['semantic_label'],
@@ -451,14 +451,19 @@ def export_oneformer_dir(
                 segment_score=result['segment_score'],
                 height=result['height'],
                 width=result['width'],
+                orig_h=result['orig_hw'][0],
+                orig_w=result['orig_hw'][1],
+                processed_hw=result['processed_hw'],
             )
 
-            # Save json
+            # Save json with complete size information
             json_data = {
                 'image_path': img_path,
                 'relative_stem': rel_stem,
-                'height': result['height'],
-                'width': result['width'],
+                'height': result['height'],  # segmentation height
+                'width': result['width'],    # segmentation width
+                'orig_h': result['orig_hw'][0],  # original image height
+                'orig_w': result['orig_hw'][1],  # original image width
                 'orig_hw': result['orig_hw'],
                 'processed_hw': result['processed_hw'],
                 'id2label': segmentor.id2label,
