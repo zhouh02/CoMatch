@@ -47,37 +47,48 @@ def parse_args():
     return parser.parse_args()
 
 
-def load_and_preprocess(image_path, resize, df=8):
-    """Load image, resize, and return tensor + metadata."""
+def load_image(image_path, resize, df=8):
+    """Load image, resize, and return tensor + scale + raw image."""
     img_raw = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if img_raw is None:
         raise FileNotFoundError(f'Cannot read image: {image_path}')
 
     img_tensor, _, scale = read_megadepth_gray(image_path, resize=resize, df=df)
-    h, w = img_tensor.shape[1], img_tensor.shape[2]
-    return img_tensor, scale, img_raw, h, w
+    return img_tensor, scale, img_raw
 
 
-def run_inference(model, image0, image1, scale0, scale1):
+def pad_to_size(img_tensor, target_h, target_w):
+    """Zero-pad (1,H,W) image tensor to (1,target_H,target_W) and return mask."""
+    _, h, w = img_tensor.shape
+    padded = torch.zeros(1, target_h, target_w, dtype=img_tensor.dtype)
+    padded[:, :h, :w] = img_tensor
+    mask = torch.zeros(target_h, target_w, dtype=torch.bool)
+    mask[:h, :w] = True
+    return padded, mask
+
+
+def run_inference(model, image0, image1, scale0, scale1, mask0, mask1):
     """Run CoMatch and return match keypoints + confidence."""
     batch = {
         'image0': image0.unsqueeze(0).cuda(),
         'image1': image1.unsqueeze(0).cuda(),
         'scale0': scale0.unsqueeze(0).cuda(),
         'scale1': scale1.unsqueeze(0).cuda(),
+        'mask0': mask0.unsqueeze(0).cuda(),
+        'mask1': mask1.unsqueeze(0).cuda(),
     }
 
     with torch.no_grad():
         model.matcher(batch)
 
-    mkpts0 = batch['mkpts0_f'].cpu().numpy()  # original-image coords
+    mkpts0 = batch['mkpts0_f'].cpu().numpy()
     mkpts1 = batch['mkpts1_f'].cpu().numpy()
     mconf = batch['mconf'].cpu().numpy()
     return mkpts0, mkpts1, mconf
 
 
-def visualize(img0, img1, mkpts0, mkpts1, mconf, scale0, scale1,
-              proc0_hw, proc1_hw, max_matches=300, output_path='match.png', dpi=150):
+def visualize(img0_raw, img1_raw, mkpts0, mkpts1, mconf, scale0, scale1,
+              max_matches=300, output_path='match.png', dpi=150):
     """Draw matches on processed images and save."""
     scale0_np = scale0.numpy()
     scale1_np = scale1.numpy()
@@ -98,15 +109,18 @@ def visualize(img0, img1, mkpts0, mkpts1, mconf, scale0, scale1,
     alpha = dynamic_alpha(n)
     color = error_colormap(1 - mconf, 0.5, alpha=alpha)
 
-    # Prepare processed images as numpy (from tensor)
-    # Use the raw images resized to processed size for better visualization
-    img0_vis = cv2.resize(img0, (proc0_hw[1], proc0_hw[0]))
-    img1_vis = cv2.resize(img1, (proc1_hw[1], proc1_hw[0]))
+    # Resize raw images to processed size for display
+    h0_vis = int(round(img0_raw.shape[0] * scale0_np[1]))
+    w0_vis = int(round(img0_raw.shape[1] * scale0_np[0]))
+    h1_vis = int(round(img1_raw.shape[0] * scale1_np[1]))
+    w1_vis = int(round(img1_raw.shape[1] * scale0_np[0]))
+    img0_vis = cv2.resize(img0_raw, (w0_vis, h0_vis))
+    img1_vis = cv2.resize(img1_raw, (w1_vis, h1_vis))
 
     text = [
         f'#Matches: {n}',
-        f'Image0: {proc0_hw[1]}x{proc0_hw[0]}',
-        f'Image1: {proc1_hw[1]}x{proc1_hw[0]}',
+        f'Image0: {img0_raw.shape[1]}x{img0_raw.shape[0]} -> {w0_vis}x{h0_vis}',
+        f'Image1: {img1_raw.shape[1]}x{img1_raw.shape[0]} -> {w1_vis}x{h1_vis}',
     ]
 
     os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
@@ -142,20 +156,30 @@ def main():
     logger.info(f'Model loaded from {args.ckpt_path}')
 
     # --- Images ---
-    img0_tensor, scale0, img0_raw, h0, w0 = load_and_preprocess(args.image0, args.megasize)
-    img1_tensor, scale1, img1_raw, h1, w1 = load_and_preprocess(args.image1, args.megasize)
+    img0_tensor, scale0, img0_raw = load_image(args.image0, args.megasize)
+    img1_tensor, scale1, img1_raw = load_image(args.image1, args.megasize)
+    _, h0, w0 = img0_tensor.shape
+    _, h1, w1 = img1_tensor.shape
     logger.info(f'Image0: {img0_raw.shape[1]}x{img0_raw.shape[0]} -> {w0}x{h0}')
     logger.info(f'Image1: {img1_raw.shape[1]}x{img1_raw.shape[0]} -> {w1}x{h1}')
 
+    # Pad to common size so backbone can batch them (avoids NPE size mismatch)
+    max_h = max(h0, h1)
+    max_w = max(w0, w1)
+    # Make divisible by df=8
+    max_h = max_h + (8 - max_h % 8) % 8
+    max_w = max_w + (8 - max_w % 8) % 8
+    img0_pad, mask0 = pad_to_size(img0_tensor, max_h, max_w)
+    img1_pad, mask1 = pad_to_size(img1_tensor, max_h, max_w)
+
     # --- Inference ---
-    mkpts0, mkpts1, mconf = run_inference(model, img0_tensor, img1_tensor, scale0, scale1)
+    mkpts0, mkpts1, mconf = run_inference(model, img0_pad, img1_pad, scale0, scale1, mask0, mask1)
     logger.info(f'Matches found: {len(mkpts0)}')
 
     # --- Visualize ---
     visualize(
         img0_raw, img1_raw, mkpts0, mkpts1, mconf,
         scale0, scale1,
-        proc0_hw=(h0, w0), proc1_hw=(h1, w1),
         max_matches=args.max_matches,
         output_path=args.output_path,
         dpi=args.dpi,
