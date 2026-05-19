@@ -113,7 +113,7 @@ def visualize(img0_raw, img1_raw, mkpts0, mkpts1, mconf, scale0, scale1,
     h0_vis = int(round(img0_raw.shape[0] * scale0_np[1]))
     w0_vis = int(round(img0_raw.shape[1] * scale0_np[0]))
     h1_vis = int(round(img1_raw.shape[0] * scale1_np[1]))
-    w1_vis = int(round(img1_raw.shape[1] * scale0_np[0]))
+    w1_vis = int(round(img1_raw.shape[1] * scale1_np[0]))
     img0_vis = cv2.resize(img0_raw, (w0_vis, h0_vis))
     img1_vis = cv2.resize(img1_raw, (w1_vis, h1_vis))
 
@@ -163,12 +163,12 @@ def main():
     logger.info(f'Image0: {img0_raw.shape[1]}x{img0_raw.shape[0]} -> {w0}x{h0}')
     logger.info(f'Image1: {img1_raw.shape[1]}x{img1_raw.shape[0]} -> {w1}x{h1}')
 
-    # Pad to common size so backbone can batch them (avoids NPE size mismatch)
+    # Pad to common size so backbone can batch them (avoids NPE size mismatch).
+    # Must be divisible by 32: backbone downsamples 8x, then aggregator 4x.
     max_h = max(h0, h1)
     max_w = max(w0, w1)
-    # Make divisible by df=8
-    max_h = max_h + (8 - max_h % 8) % 8
-    max_w = max_w + (8 - max_w % 8) % 8
+    max_h = max_h + (32 - max_h % 32) % 32
+    max_w = max_w + (32 - max_w % 32) % 32
     img0_pad, mask0 = pad_to_size(img0_tensor, max_h, max_w)
     img1_pad, mask1 = pad_to_size(img1_tensor, max_h, max_w)
 
