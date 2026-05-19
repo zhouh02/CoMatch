@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Visualize semantic diagnostic results for selected pairs.
+Visualize semantic diagnostic results for selected pairs or all pairs.
 
 This script creates visualization images showing:
 1. Left-right image concatenation with match lines
@@ -8,7 +8,7 @@ This script creates visualization images showing:
 3. OneFormer segmentation overlay
 4. Statistics and pair info
 
-Usage:
+Usage (target pairs):
     python tools/semantic_covis/visualize_semantic_diagnostic_pair.py \
         --per-match-jsonl outputs/semantic_diagnostic_outdoor_vis/per_match_semantic_diagnostic.jsonl \
         --pair-list outputs/semantic_diagnostic_outdoor/top_coarse_error_pairs.jsonl \
@@ -17,6 +17,16 @@ Usage:
         --output-dir outputs/semantic_diagnostic_visualizations \
         --max-lines 500 \
         --overlay-alpha 0.45
+
+Usage (all pairs - no pair-list needed):
+    python tools/semantic_covis/visualize_semantic_diagnostic_pair.py \
+        --per-match-jsonl outputs/semantic_diagnostic_outdoor_vis/per_match_semantic_diagnostic.jsonl \
+        --image-root /ssd-data3/zh2025/datasets/MegaDepth \
+        --oneformer-dir outputs/oneformer_outdoor_test \
+        --output-dir outputs/semantic_diagnostic_visualizations_full \
+        --max-lines 500 \
+        --overlay-alpha 0.45 \
+        --max-pairs 0
 """
 
 import argparse
@@ -600,9 +610,32 @@ def visualize_pair(
     return True
 
 
+def build_pairs_from_matches(records: List[Dict]) -> List[Dict]:
+    """Build pair list from per-match records.
+
+    When no explicit pair-list is provided, extract unique pairs from
+    per-match JSONL. Each unique pair_key becomes one entry.
+    Assigns sequential rank numbers since target-pair files may not have rank.
+    """
+    pair_keys_seen = {}
+    for rec in records:
+        pair_key = rec.get('pair_key', '')
+        if not pair_key:
+            continue
+        if pair_key not in pair_keys_seen:
+            pair_keys_seen[pair_key] = {
+                'pair_key': pair_key,
+                'image0': rec.get('image0', ''),
+                'image1': rec.get('image1', ''),
+                'rank': len(pair_keys_seen),
+            }
+
+    return list(pair_keys_seen.values())
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Visualize semantic diagnostic results for selected pairs"
+        description="Visualize semantic diagnostic results for selected pairs or all pairs"
     )
     parser.add_argument(
         '--per-match-jsonl',
@@ -613,8 +646,9 @@ def main():
     parser.add_argument(
         '--pair-list',
         type=str,
-        required=True,
-        help='Path to top_coarse_error_pairs.jsonl'
+        default=None,
+        required=False,
+        help='Path to top_coarse_error_pairs.jsonl (optional, builds from per-match if not provided)'
     )
     parser.add_argument(
         '--image-root',
@@ -653,11 +687,23 @@ def main():
         default=0.45,
         help='Segmentation overlay alpha'
     )
+    parser.add_argument(
+        '--max-pairs',
+        type=int,
+        default=0,
+        help='Maximum number of pairs to visualize (0 = all)'
+    )
+    parser.add_argument(
+        '--skip-existing',
+        action='store_true',
+        default=False,
+        help='Skip pairs that already have visualization output'
+    )
 
     args = parser.parse_args()
 
     per_match_jsonl = Path(args.per_match_jsonl)
-    pair_list_jsonl = Path(args.pair_list)
+    pair_list_jsonl = Path(args.pair_list) if args.pair_list else None
     oneformer_dir = Path(args.oneformer_dir)
     output_dir = Path(args.output_dir)
 
@@ -667,23 +713,28 @@ def main():
     records = load_per_match_data(per_match_jsonl)
     print(f"  Loaded {len(records)} match records")
 
-    print(f"Loading pair list from: {pair_list_jsonl}")
-    pairs = load_pair_list(pair_list_jsonl)
-    print(f"  Loaded {len(pairs)} pairs")
+    # Build pair list: from explicit file, or from per-match data
+    if pair_list_jsonl and pair_list_jsonl.exists():
+        print(f"Loading pair list from: {pair_list_jsonl}")
+        pairs = load_pair_list(pair_list_jsonl)
+        print(f"  Loaded {len(pairs)} pairs from explicit list")
+    else:
+        print("No explicit pair-list provided, building from per-match data...")
+        pairs = build_pairs_from_matches(records)
+        print(f"  Built {len(pairs)} unique pairs from per-match data")
 
     # Group matches by pair_key
     grouped = group_matches_by_pair(records)
     print(f"  Grouped into {len(grouped)} unique pairs")
 
-    # Create a lookup from pair_key to pair_info
-    pair_lookup = {}
-    for p in pairs:
-        key = p.get('pair_key')
-        if key:
-            pair_lookup[key] = p
+    # Limit number of pairs if requested
+    if args.max_pairs > 0 and len(pairs) > args.max_pairs:
+        print(f"  Limiting to first {args.max_pairs} pairs")
+        pairs = pairs[:args.max_pairs]
 
     # Process each pair
     success_count = 0
+    skipped_count = 0
     for pair in pairs:
         pair_key = pair.get('pair_key', '')
         if not pair_key:
@@ -693,6 +744,14 @@ def main():
         if not matches:
             print(f"  No match data for pair: {pair_key[:80]}...")
             continue
+
+        # Check skip-existing flag
+        if args.skip_existing:
+            rank_str = pair.get('rank', 0)
+            pair_dir = output_dir / f"pair_{rank_str:03d}"
+            if pair_dir.exists() and (pair_dir / "pair_info.json").exists():
+                skipped_count += 1
+                continue
 
         print(f"  Processing pair {pair.get('rank')}: {Path(pair.get('image0', '')).name}")
 
@@ -709,6 +768,9 @@ def main():
 
     print(f"\nVisualization complete!")
     print(f"  Processed {success_count} pairs")
+    if skipped_count > 0:
+        print(f"  Skipped (existing) {skipped_count} pairs")
+    print(f"  Total pairs in list: {len(pairs)}")
     print(f"  Output: {output_dir}")
 
 
