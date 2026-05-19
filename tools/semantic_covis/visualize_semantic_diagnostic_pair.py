@@ -195,8 +195,19 @@ def load_oneformer_segmentation(image_path: str, oneformer_dir: Path) -> Optiona
     """
     npz_dir = oneformer_dir / "npz"
 
+    # Handle list-wrapped paths like "['path.jpg']"
+    path_str = str(image_path).strip()
+    if path_str.startswith("[") and path_str.endswith("]"):
+        import ast
+        try:
+            parsed = ast.literal_eval(path_str)
+            if isinstance(parsed, (list, tuple)) and len(parsed) > 0:
+                path_str = str(parsed[0])
+        except Exception:
+            pass
+
     # Build safe stem from image path
-    p = Path(image_path)
+    p = Path(path_str)
     rel_stem = p.with_suffix("")
     safe_stem = rel_stem.as_posix().replace("/", "_").replace("\\", "_")
 
@@ -234,7 +245,18 @@ def load_image(image_path: str, image_root: str = None) -> Optional[np.ndarray]:
     if not HAS_CV2:
         return None
 
-    path = Path(image_path)
+    # Handle list-wrapped paths like "['path.jpg']"
+    path_str = str(image_path).strip()
+    if path_str.startswith("[") and path_str.endswith("]"):
+        import ast
+        try:
+            parsed = ast.literal_eval(path_str)
+            if isinstance(parsed, (list, tuple)) and len(parsed) > 0:
+                path_str = str(parsed[0])
+        except Exception:
+            pass
+
+    path = Path(path_str)
     if not path.is_absolute() and image_root:
         path = Path(image_root) / path
 
@@ -623,10 +645,29 @@ def build_pairs_from_matches(records: List[Dict]) -> List[Dict]:
         if not pair_key:
             continue
         if pair_key not in pair_keys_seen:
+            # Handle list-wrapped paths
+            img0 = rec.get('image0', '')
+            img1 = rec.get('image1', '')
+            if isinstance(img0, str) and img0.startswith("[") and img0.endswith("]"):
+                import ast
+                try:
+                    parsed = ast.literal_eval(img0)
+                    if isinstance(parsed, (list, tuple)) and len(parsed) > 0:
+                        img0 = str(parsed[0])
+                except Exception:
+                    pass
+            if isinstance(img1, str) and img1.startswith("[") and img1.endswith("]"):
+                import ast
+                try:
+                    parsed = ast.literal_eval(img1)
+                    if isinstance(parsed, (list, tuple)) and len(parsed) > 0:
+                        img1 = str(parsed[0])
+                except Exception:
+                    pass
             pair_keys_seen[pair_key] = {
                 'pair_key': pair_key,
-                'image0': rec.get('image0', ''),
-                'image1': rec.get('image1', ''),
+                'image0': img0,
+                'image1': img1,
                 'rank': len(pair_keys_seen),
             }
 
