@@ -123,11 +123,10 @@ class MultiSceneDataModule(pl.LightningDataModule):
             self.world_size = dist.get_world_size()
             self.rank = dist.get_rank()
             logger.info(f"[rank:{self.rank}] world_size: {self.world_size}")
-        except AssertionError as ae:
+        except (AssertionError, RuntimeError) as e:
             self.world_size = 1
             self.rank = 0
-            # logger.warning(" (set wolrd_size=1 and rank=0)")
-            logger.warning(str(ae) + " (set wolrd_size=1 and rank=0)")
+            logger.info(f"(set world_size=1, rank=0 for non-distributed mode: {type(e).__name__})")
 
         if stage == 'fit':
             self.train_dataset = self._setup_dataset(
