@@ -326,13 +326,11 @@ class PL_LoFTR(pl.LightningModule):
                         )
                         return
 
-                # Get pair names
-                # After DataLoader collate on bs=1:
-                #   [('name0',), ('name1',)]  — two single-element tuples
-                # After zip(*pair_names) → [('name0', 'name1')]
-                # We use the same zip(*) pattern as _compute_metrics.
+                # Get pair names using the same zip(*) pattern as _compute_metrics.
                 rel_pair_names = list(zip(*pair_names))
-                name0, name1 = rel_pair_names[b]
+                # Ensure names are Python str (not numpy str or other types)
+                name0 = str(rel_pair_names[b][0])
+                name1 = str(rel_pair_names[b][1])
 
                 pair_id = f"{Path(name0).stem}_{Path(name1).stem}"
 
@@ -444,21 +442,29 @@ class PL_LoFTR(pl.LightningModule):
         if not all_stats:
             return
 
-        # Write merged JSONL
+        # Write merged JSONL (deduplicate by pair_id like the original metrics code)
+        seen_ids = set()
+        unique_stats = []
+        for stat in all_stats:
+            pid = stat.get('pair_id', '')
+            if pid not in seen_ids:
+                seen_ids.add(pid)
+                unique_stats.append(stat)
+
         merged_jsonl = Path(self.dump_dir or '.') / f"{self.semantic_dump_name}.jsonl"
         with open(merged_jsonl, 'w') as f:
-            for stat in all_stats:
+            for stat in unique_stats:
                 f.write(json.dumps(stat) + '\n')
 
         # Compute summary
-        num_pairs = len(all_stats)
-        num_skipped = sum(1 for s in all_stats if s.get('skipped', False))
-        total_matches = sum(s.get('num_matches', 0) for s in all_stats)
-        total_after_conf = sum(s.get('num_after_conf', 0) for s in all_stats)
-        total_in_bounds = sum(s.get('num_in_bounds', 0) for s in all_stats)
-        total_valid_semantic = sum(s.get('num_valid_semantic', 0) for s in all_stats)
-        total_same_semantic = sum(s.get('num_same_semantic', 0) for s in all_stats)
-        total_cross_semantic = sum(s.get('num_cross_semantic', 0) for s in all_stats)
+        num_pairs = len(unique_stats)
+        num_skipped = sum(1 for s in unique_stats if s.get('skipped', False))
+        total_matches = sum(s.get('num_matches', 0) for s in unique_stats)
+        total_after_conf = sum(s.get('num_after_conf', 0) for s in unique_stats)
+        total_in_bounds = sum(s.get('num_in_bounds', 0) for s in unique_stats)
+        total_valid_semantic = sum(s.get('num_valid_semantic', 0) for s in unique_stats)
+        total_same_semantic = sum(s.get('num_same_semantic', 0) for s in unique_stats)
+        total_cross_semantic = sum(s.get('num_cross_semantic', 0) for s in unique_stats)
 
         # Micro cross semantic rate
         if total_valid_semantic > 0:
@@ -468,7 +474,7 @@ class PL_LoFTR(pl.LightningModule):
 
         # Macro cross semantic rate (mean of non-skipped, non-nan rates)
         valid_rates = []
-        for s in all_stats:
+        for s in unique_stats:
             if not s.get('skipped', False):
                 rate = s.get('cross_semantic_rate')
                 if rate is not None and not (isinstance(rate, float) and np.isnan(rate)):
