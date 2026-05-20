@@ -392,6 +392,20 @@ class PL_LoFTR(pl.LightningModule):
 
     def _aggregate_semantic_stats(self):
         """Aggregate semantic stats from all ranks and write output files."""
+
+        def _convert_numpy(obj):
+            """Convert numpy types to Python native for JSON serialization."""
+            if isinstance(obj, (np.integer,)):
+                return int(obj)
+            if isinstance(obj, (np.floating,)):
+                return float(obj)
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            return obj
+
+        def _make_json_serializable(d):
+            return {k: _convert_numpy(v) for k, v in d.items()}
+
         try:
             rank = self.trainer.global_rank
         except Exception:
@@ -408,7 +422,7 @@ class PL_LoFTR(pl.LightningModule):
             rank_jsonl.parent.mkdir(parents=True, exist_ok=True)
             with open(rank_jsonl, 'w') as f:
                 for stat in self._pair_semantic_stats:
-                    f.write(json.dumps(stat) + '\n')
+                    f.write(json.dumps(_make_json_serializable(stat)) + '\n')
             logger.info(f"[rank {rank}] Wrote {len(self._pair_semantic_stats)} pairs to {rank_jsonl}")
 
         # Only rank 0 aggregates and writes summary
@@ -477,7 +491,7 @@ class PL_LoFTR(pl.LightningModule):
         # Write summary
         summary_path = Path(self.dump_dir or '.') / f"{self.semantic_dump_name}_summary.json"
         with open(summary_path, 'w') as f:
-            json.dump(summary, f, indent=2)
+            json.dump(_make_json_serializable(summary), f, indent=2)
 
         logger.info(f"Semantic consistency summary written to {summary_path}")
         logger.info(f"  Pairs: {num_pairs} total, {num_skipped} skipped")
