@@ -1048,6 +1048,17 @@ def diagnose_batch(
     # So orig_w = scale0[0] * processed_w, orig_h = scale0[1] * processed_h
     comatch_orig_hw0 = None
     comatch_orig_hw1 = None
+
+    # DEBUG: Print raw batch values
+    if 'scale0' in batch:
+        scale0_raw = batch['scale0']
+        if hasattr(scale0_raw, 'cpu'):
+            scale0_raw = scale0_raw.cpu().numpy()
+        print(f"  DEBUG: scale0 shape={scale0_raw.shape}, scale0={scale0_raw}")
+    if 'hw0_i' in batch:
+        hw0_i_raw = batch['hw0_i']
+        print(f"  DEBUG: hw0_i type={type(hw0_i_raw)}, hw0_i={hw0_i_raw}")
+
     if 'scale0' in batch and 'hw0_i' in batch:
         scale0 = batch['scale0']
         hw0_i = batch['hw0_i']
@@ -1062,9 +1073,12 @@ def diagnose_batch(
             processed_h, processed_w = hw0_i[0], hw0_i[1]
         else:
             processed_h, processed_w = hw0_i[0].item(), hw0_i[1].item() if hasattr(hw0_i[0], 'item') else hw0_i
-        comatch_orig_h = int(processed_h * scale0[1])
-        comatch_orig_w = int(processed_w * scale0[0])
-        comatch_orig_hw0 = (comatch_orig_h, comatch_orig_w)
+        print(f"  DEBUG: processed_h={processed_h}, processed_w={processed_w}")
+        print(f"  DEBUG: scale0[0]={scale0[0]:.4f}, scale0[1]={scale0[1]:.4f}")
+        comatch_orig_h = processed_h * scale0[1]
+        comatch_orig_w = processed_w * scale0[0]
+        print(f"  DEBUG: comatch_orig_h={comatch_orig_h:.2f}, comatch_orig_w={comatch_orig_w:.2f}")
+        comatch_orig_hw0 = (int(comatch_orig_h), int(comatch_orig_w))
 
     if 'scale1' in batch and 'hw1_i' in batch:
         scale1 = batch['scale1']
@@ -1077,9 +1091,9 @@ def diagnose_batch(
             processed_h, processed_w = hw1_i[0], hw1_i[1]
         else:
             processed_h, processed_w = hw1_i[0].item(), hw1_i[1].item() if hasattr(hw1_i[0], 'item') else hw1_i
-        comatch_orig_h = int(processed_h * scale1[1])
-        comatch_orig_w = int(processed_w * scale1[0])
-        comatch_orig_hw1 = (comatch_orig_h, comatch_orig_w)
+        comatch_orig_h = processed_h * scale1[1]
+        comatch_orig_w = processed_w * scale1[0]
+        comatch_orig_hw1 = (int(comatch_orig_h), int(comatch_orig_w))
 
     # Get segmentation dimensions
     seg0_hw = (seg0['height'], seg0['width'])
