@@ -62,20 +62,15 @@ def collect_megadepth_test_images(data_cfg_path: str) -> Tuple[List[str], int, i
     Returns:
         Tuple of (image_paths, num_pairs, num_unique_images)
     """
-    from omegaconf import OmegaConf
-    from src.datasets.megadepth import MegaDepthDataset
-    import torch
+    from src.config.default import get_cfg_defaults
 
-    # Load config
-    config = OmegaConf.load(data_cfg_path)
-    test_cfg = OmegaConf.merge(
-        OmegaConf.load("configs/data/base.py"),
-        config
-    )
+    # Load config using yacs (same as test.py)
+    config = get_cfg_defaults()
+    config.merge_from_file(data_cfg_path)
 
-    data_root = test_cfg.cfg.DATASET.TEST_DATA_ROOT
-    npz_root = test_cfg.cfg.DATASET.TEST_NPZ_ROOT
-    scene_list_path = test_cfg.cfg.DATASET.TEST_LIST_PATH
+    data_root = config.DATASET.TEST_DATA_ROOT
+    npz_root = config.DATASET.TEST_NPZ_ROOT
+    scene_list_path = config.DATASET.TEST_LIST_PATH
 
     # Read scene list
     with open(scene_list_path, 'r') as f:
