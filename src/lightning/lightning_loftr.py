@@ -326,24 +326,12 @@ class PL_LoFTR(pl.LightningModule):
                         return
 
                 # Get pair names
-                # PyTorch DataLoader default_collate on a tuple field produces:
-                #   batch_size > 1:  [(name0_a, name1_a), (name0_b, name1_b), ...]
-                #   batch_size == 1: [name0, name1]  (collate unwraps the single tuple)
-                # Handle both cases.
-                if isinstance(pair_names, (list, tuple)):
-                    if len(pair_names) == 2 and isinstance(pair_names[0], str):
-                        # batch_size == 1, collate unwrapped the tuple
-                        name0, name1 = pair_names[0], pair_names[1]
-                    elif len(pair_names) == bs and isinstance(pair_names[b], (list, tuple)):
-                        # batch_size > 1, each entry is a 2-tuple
-                        name0, name1 = pair_names[b][0], pair_names[b][1]
-                    else:
-                        logger.warning(f"Unexpected pair_names format: len={len(pair_names)}, "
-                                       f"first_type={type(pair_names[0]) if pair_names else None}, bs={bs}")
-                        return
-                else:
-                    logger.warning(f"Unexpected pair_names type: {type(pair_names)}")
-                    return
+                # After DataLoader collate on bs=1:
+                #   [('name0',), ('name1',)]  — two single-element tuples
+                # After zip(*pair_names) → [('name0', 'name1')]
+                # We use the same zip(*) pattern as _compute_metrics.
+                rel_pair_names = list(zip(*pair_names))
+                name0, name1 = rel_pair_names[b]
 
                 pair_id = f"{Path(name0).stem}_{Path(name1).stem}"
 
