@@ -340,33 +340,29 @@ def draw_match_lines(
 ) -> np.ndarray:
     """Draw match lines on concatenated left-right image.
 
-    This function handles coordinate mapping between:
-    - seg_x0/y0/x1/y1: coordinates in segmentation space
-    - img_left/right: input images (can be original or resized)
+    Coordinate System Logic (CRITICAL):
+    - seg_x0/y0/x1/y1 are in SEGMENTATION coordinate space
+    - img_left/right are in ORIGINAL image coordinate space (from cv2.imread)
+    - CoMatch mkpts are in ORIGINAL image coordinate space
+    - OneFormer seg was run on ORIGINAL images (if target_size not specified)
+    - So when seg_hw == orig_hw: seg_coords == orig_coords == img_coords
 
-    The coordinate system logic:
-    1. seg_x0/y0 are in ONE_FORMER segmentation coordinate space
-    2. OneFormer was run on ORIGINAL images (if target_size not specified)
-    3. So seg coordinates == original image coordinates when seg_hw == orig_hw
-
-    To handle all cases correctly:
-    - If img dimensions == seg dimensions: use seg coords directly
-    - If img dimensions == orig dimensions (but seg != orig): need coordinate transform
-    - Best practice: always use original image dimensions and convert seg coords
+    Key assumption: seg coordinates directly map to img coordinates because
+    both are in the original image coordinate space.
 
     Args:
-        img_left: [H, W, 3] left image (should be original size for correct visualization)
-        img_right: [H, W, 3] right image (should be original size for correct visualization)
+        img_left: [H, W, 3] left image in ORIGINAL size (from cv2.imread)
+        img_right: [H, W, 3] right image in ORIGINAL size
         matches: List of match dicts with seg_x0, seg_y0, seg_x1, seg_y1
         max_lines: Maximum number of lines to draw
         error_only: If True, only draw coarse error lines
         seg0_hw: Segmentation size (H, W) for left image
         seg1_hw: Segmentation size (H, W) for right image
-        img0_orig_hw: Original image size (H, W) for left image (for coordinate transform)
-        img1_orig_hw: Original image size (H, W) for right image (for coordinate transform)
+        img0_orig_hw: Original image size (H, W) for left image (unused, kept for API compat)
+        img1_orig_hw: Original image size (H, W) for right image (unused, kept for API compat)
 
     Returns:
-        Concatenated image with match lines drawn
+        Concatenated image with match lines drawn in original image coordinates
     """
     if not HAS_CV2:
         return np.zeros((max(img_left.shape[0], img_right.shape[0]),
@@ -375,42 +371,44 @@ def draw_match_lines(
     img_left_h, img_left_w = img_left.shape[:2]
     img_right_h, img_right_w = img_right.shape[:2]
 
-    # Determine if we need coordinate transform
-    # seg coords are in seg_space, but we want to draw on img_left/right
-    need_transform = False
-    if seg0_hw and (seg0_hw[0] != img_left_h or seg0_hw[1] != img_left_w):
-        need_transform = True
-    if seg1_hw and (seg1_hw[0] != img_right_h or seg1_hw[1] != img_right_w):
-        need_transform = True
+    # Since seg was run on original images (seg_hw == orig_hw when target_size not used),
+    # and CoMatch mkpts are in original image coords,
+    # seg_x0/y0 directly correspond to img coordinates.
+    # No coordinate transform needed when seg_hw == orig_hw.
+    #
+    # The only reason for transform is if OneFormer used a different resolution,
+    # which happens when target_size is specified.
 
-    # If img is already at seg size, no transform needed (common case: seg_hw == orig_hw)
-    if not need_transform:
-        # Use seg coords directly - they are aligned with image dimensions
-        pass
+    # Check if coordinate transform is needed
+    if seg0_hw and seg1_hw:
+        # If seg dimensions differ from img dimensions, we need transform
+        # This happens when OneFormer was run with target_size != None
+        seg_left_equals_img = (seg0_hw[0] == img_left_h and seg0_hw[1] == img_left_w)
+        seg_right_equals_img = (seg1_hw[0] == img_right_h and seg1_hw[1] == img_right_w)
 
-    # Otherwise, transform from seg_space to image_space
-    # This happens when OneFormer used target_size or img was loaded at different resolution
-    scale0_x = img_left_w / seg0_hw[1] if seg0_hw and seg0_hw[1] > 0 else 1.0
-    scale0_y = img_left_h / seg0_hw[0] if seg0_hw and seg0_hw[0] > 0 else 1.0
-    scale1_x = img_right_w / seg1_hw[1] if seg1_hw and seg1_hw[1] > 0 else 1.0
-    scale1_y = img_right_h / seg1_hw[0] if seg1_hw and seg1_hw[0] > 0 else 1.0
+        if not seg_left_equals_img or not seg_right_equals_img:
+            # Need coordinate transform
+            scale0_x = img_left_w / seg0_hw[1] if seg0_hw[1] > 0 else 1.0
+            scale0_y = img_left_h / seg0_hw[0] if seg0_hw[0] > 0 else 1.0
+            scale1_x = img_right_w / seg1_hw[1] if seg1_hw[1] > 0 else 1.0
+            scale1_y = img_right_h / seg1_hw[0] if seg1_hw[0] > 0 else 1.0
+        else:
+            scale0_x = scale0_y = scale1_x = scale1_y = 1.0
+    else:
+        # No seg sizes provided, assume direct mapping
+        scale0_x = scale0_y = scale1_x = scale1_y = 1.0
 
-    # Ensure both images have same height for concatenation
-    h = max(img_left_h, img_right_h)
-    if img_left_h != h:
-        img_left = cv2.resize(img_left, (img_left_w, h))
-        scale0_y *= h / img_left_h  # adjust y scale if we resize
-    if img_right_h != h:
-        img_right = cv2.resize(img_right, (img_right_w, h))
-        scale1_y *= h / img_right_h  # adjust y scale if we resize
+    # Create canvas with combined width and max height (for alignment)
+    # Images are placed at their original positions - no resize!
+    canvas_w = img_left_w + img_right_w
+    canvas_h = max(img_left_h, img_right_h)
 
-    w_left = img_left.shape[1]
-    w_right = img_right.shape[1]
+    # Create canvas with black background
+    canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
 
-    # Concatenate
-    canvas = np.zeros((h, w_left + w_right, 3), dtype=np.uint8)
-    canvas[:h, :w_left] = img_left
-    canvas[:h, w_left:] = img_right
+    # Place images at their positions (no resize, preserve original dimensions)
+    canvas[:img_left_h, :img_left_w] = img_left
+    canvas[:img_right_h, img_left_w:img_left_w + img_right_w] = img_right
 
     # Filter matches
     if error_only:
@@ -452,7 +450,7 @@ def draw_match_lines(
         indices = np.random.choice(len(filtered), max_lines, replace=False)
         filtered = [filtered[i] for i in indices]
 
-    # Draw lines with coordinate transform from seg_space to image_space
+    # Draw lines using coordinates (apply scale transform if needed)
     for match in filtered:
         seg_x0 = match.get('seg_x0')
         seg_y0 = match.get('seg_y0')
@@ -462,7 +460,7 @@ def draw_match_lines(
         if seg_x0 is None or seg_y0 is None or seg_x1 is None or seg_y1 is None:
             continue
 
-        # Transform from segmentation space to image space
+        # Transform from seg space to img space (if needed)
         x0_draw = seg_x0 * scale0_x
         y0_draw = seg_y0 * scale0_y
         x1_draw = seg_x1 * scale1_x
@@ -477,7 +475,7 @@ def draw_match_lines(
             color = COLOR_COARSE_CONSISTENT  # Green
 
         pt1 = (int(x0_draw), int(y0_draw))
-        pt2 = (int(x1_draw) + w_left, int(y1_draw))
+        pt2 = (int(x1_draw) + img_left_w, int(y1_draw))
 
         cv2.line(canvas, pt1, pt2, color, 1, cv2.LINE_AA)
         cv2.circle(canvas, pt1, 2, color, -1)
@@ -681,6 +679,7 @@ def visualize_pair(
     )
 
     title = f"Pair {rank_str}: {Path(image0).name} <-> {Path(image1).name}"
+    title += f" | img0={img0_w}x{img0_h} img1={img1_w}x{img1_h}"
     title += f" | matches={stats['num_matches']} | fine_err={stats['fine_error_rate']:.2f} | coarse_err={stats['coarse_error_rate']:.2f}"
     matches_canvas = add_title_bar(matches_canvas, title)
 
@@ -703,14 +702,20 @@ def visualize_pair(
     cv2.imwrite(str(pair_dir / "matches_error_only.png"), error_canvas)
 
     # ========== segmentation_overlay.png ==========
+    # Create overlay on original image sizes (no resize!)
     overlay0 = blend_overlay(img0, seg0, alpha=overlay_alpha)
     overlay1 = blend_overlay(img1, seg1, alpha=overlay_alpha)
 
-    h = max(overlay0.shape[0], overlay1.shape[0])
-    if overlay0.shape[0] != h:
-        overlay0 = cv2.resize(overlay0, (overlay0.shape[1], h))
-    if overlay1.shape[0] != h:
-        overlay1 = cv2.resize(overlay1, (overlay1.shape[1], h))
+    # Concatenate side-by-side at original dimensions
+    # Pad the shorter image with black to match height
+    if overlay0.shape[0] != overlay1.shape[0]:
+        max_h = max(overlay0.shape[0], overlay1.shape[0])
+        if overlay0.shape[0] < max_h:
+            pad = np.zeros((max_h - overlay0.shape[0], overlay0.shape[1], 3), dtype=np.uint8)
+            overlay0 = np.vstack([overlay0, pad])
+        if overlay1.shape[0] < max_h:
+            pad = np.zeros((max_h - overlay1.shape[0], overlay1.shape[1], 3), dtype=np.uint8)
+            overlay1 = np.vstack([overlay1, pad])
 
     seg_canvas = np.hstack([overlay0, overlay1])
     seg_title = f"Segmentation Overlay: {Path(image0).name} | {Path(image1).name}"
