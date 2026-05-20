@@ -303,10 +303,10 @@ def main():
             image1, mask1, scale1 = read_megadepth_gray(abs1, 832, 8, True, None)
 
             batch = {
-                'image0': image0[None],  # (1,1,H,W)
-                'image1': image1[None],
-                'scale0': scale0[None],
-                'scale1': scale1[None],
+                'image0': image0[None].float().to(args.device),  # (1,1,H,W)
+                'image1': image1[None].float().to(args.device),
+                'scale0': scale0[None].float().to(args.device),
+                'scale1': scale1[None].float().to(args.device),
             }
 
             with torch.no_grad():
