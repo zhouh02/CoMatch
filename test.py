@@ -56,6 +56,19 @@ def parse_args():
         '--half', action='store_true', default=False, help='pure16')
     parser.add_argument(
         '--flash', action='store_true', default=False, help='flash')
+    # Semantic consistency analysis
+    parser.add_argument(
+        '--semantic_cache_dir', type=str, default=None,
+        help='Directory containing semantic label cache (manifest.json + npz files)')
+    parser.add_argument(
+        '--semantic_ignore_labels', type=str, default=None,
+        help='Comma-separated label IDs to ignore (e.g., "255,-1")')
+    parser.add_argument(
+        '--semantic_conf_thr', type=float, default=None,
+        help='Confidence threshold for semantic matching (optional)')
+    parser.add_argument(
+        '--semantic_dump_name', type=str, default='semantic_matches',
+        help='Base name for semantic output files (without extension)')
 
     parser = pl.Trainer.add_argparse_args(parser)
     return parser.parse_args()
@@ -138,7 +151,11 @@ if __name__ == '__main__':
 
     # lightning module
     profiler = build_profiler(args.profiler_name)
-    model = PL_LoFTR(config, pretrained_ckpt=args.ckpt_path, profiler=profiler, dump_dir=args.dump_dir)
+    model = PL_LoFTR(config, pretrained_ckpt=args.ckpt_path, profiler=profiler, dump_dir=args.dump_dir,
+                     semantic_cache_dir=args.semantic_cache_dir,
+                     semantic_ignore_labels=args.semantic_ignore_labels,
+                     semantic_conf_thr=args.semantic_conf_thr,
+                     semantic_dump_name=args.semantic_dump_name)
     loguru_logger.info(f"LoFTR-lightning initialized!")
 
     # lightning data

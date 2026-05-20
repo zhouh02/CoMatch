@@ -1,15 +1,16 @@
 #!/bin/bash
-# outdoor.sh wrapper with semantic diagnostic support
+# outdoor.sh wrapper with semantic cross-class matching statistics
 #
 # Usage:
-#   # Standard evaluation (backward compatible)
+#   # Standard evaluation (no semantic stats)
 #   bash scripts/reproduce_test/outdoor.sh
 #
-#   # With semantic diagnostic
-#   SEMANTIC_DIAGNOSTIC=1 \
-#   ONEFORMER_DIR=outputs/oneformer_outdoor_test \
-#   SEMANTIC_DIAGNOSTIC_OUTPUT=outputs/semantic_diagnostic_outdoor \
-#   SEMANTIC_SCORE_THRESH=0.0 \
+#   # With semantic cross-class matching analysis
+#   SEMANTIC_CACHE_DIR=outputs/semantic_cache \
+#   SEMANTIC_IGNORE_LABELS="255,-1" \
+#   SEMANTIC_CONF_THR=0.5 \
+#   SEMANTIC_DUMP_NAME=semantic_matches \
+#   DUMP_DIR=outputs/comatch_outdoor \
 #   bash scripts/reproduce_test/outdoor_semantic.sh
 
 SCRIPTPATH=$(dirname $(readlink -f "$0"))
@@ -29,57 +30,58 @@ ckpt_path="weights/comatch_outdoor.ckpt"
 data_cfg_path="configs/data/megadepth_test_1500.py"
 size="1152"
 
-# Check if semantic diagnostic is enabled
-if [ "${SEMANTIC_DIAGNOSTIC:-0}" = "1" ]; then
+# Semantic consistency analysis settings
+SEMANTIC_CACHE_DIR="${SEMANTIC_CACHE_DIR:-}"
+SEMANTIC_IGNORE_LABELS="${SEMANTIC_IGNORE_LABELS:-255,-1}"
+SEMANTIC_CONF_THR="${SEMANTIC_CONF_THR:-}"
+SEMANTIC_DUMP_NAME="${SEMANTIC_DUMP_NAME:-semantic_matches}"
+DUMP_DIR="${DUMP_DIR:-outputs/comatch_outdoor}"
+
+# Build base args
+BASE_ARGS="${data_cfg_path} ${main_cfg_path} \
+    --ckpt_path=${ckpt_path} \
+    --dump_dir=${DUMP_DIR} \
+    --gpus=${n_gpus_per_node} --num_nodes=${n_nodes} --accelerator="ddp" \
+    --batch_size=${batch_size} --num_workers=${torch_num_workers}\
+    --profiler_name=${profiler_name} \
+    --benchmark \
+    --megasize $size \
+    --npe \
+    --thr 0.1 \
+    --ransac_times 5 \
+    --deter"
+
+# Check if semantic cache directory is provided
+if [ -n "${SEMANTIC_CACHE_DIR}" ]; then
     echo "=========================================="
-    echo "Semantic Diagnostic Mode Enabled"
+    echo "Semantic Cross-Class Matching Analysis"
     echo "=========================================="
-    echo "  ONEFORMER_DIR: ${ONEFORMER_DIR:-not set}"
-    echo "  OUTPUT_DIR: ${SEMANTIC_DIAGNOSTIC_OUTPUT:-not set}"
-    echo "  SCORE_THRESH: ${SEMANTIC_SCORE_THRESH:-0.0}"
+    echo "  Cache Dir: ${SEMANTIC_CACHE_DIR}"
+    echo "  Ignore Labels: ${SEMANTIC_IGNORE_LABELS}"
+    echo "  Conf Thresh: ${SEMANTIC_CONF_THR:-disabled}"
+    echo "  Dump Name: ${SEMANTIC_DUMP_NAME}"
+    echo "  Dump Dir: ${DUMP_DIR}"
     echo "=========================================="
 
-    # Build semantic diagnostic args
-    SEMANTIC_ARGS="--semantic-diag"
-    if [ -n "${ONEFORMER_DIR}" ]; then
-        SEMANTIC_ARGS="${SEMANTIC_ARGS} --oneformer-dir=${ONEFORMER_DIR}"
-    fi
-    if [ -n "${SEMANTIC_DIAGNOSTIC_OUTPUT}" ]; then
-        SEMANTIC_ARGS="${SEMANTIC_ARGS} --semantic-output-dir=${SEMANTIC_DIAGNOSTIC_OUTPUT}"
-    fi
-    if [ -n "${SEMANTIC_SCORE_THRESH}" ]; then
-        SEMANTIC_ARGS="${SEMANTIC_ARGS} --semantic-score-thresh=${SEMANTIC_SCORE_THRESH}"
+    # Build semantic args
+    SEMANTIC_ARGS="--semantic_cache_dir=${SEMANTIC_CACHE_DIR} \
+        --semantic_ignore_labels=${SEMANTIC_IGNORE_LABELS} \
+        --semantic_dump_name=${SEMANTIC_DUMP_NAME}"
+
+    if [ -n "${SEMANTIC_CONF_THR}" ]; then
+        SEMANTIC_ARGS="${SEMANTIC_ARGS} --semantic_conf_thr=${SEMANTIC_CONF_THR}"
     fi
 
-    # Use test_semantic.py
-    echo "Running with test_semantic.py..."
-    python ./test_semantic.py \
-        ${data_cfg_path} \
-        ${main_cfg_path} \
-        --ckpt_path=${ckpt_path} \
-        --gpus=${n_gpus_per_node} --num_nodes=${n_nodes} --accelerator="ddp" \
-        --batch_size=${batch_size} --num_workers=${torch_num_workers}\
-        --profiler_name=${profiler_name} \
-        --benchmark \
-        --megasize $size \
-        --npe \
-        --thr 0.1 \
-        --ransac_times 5 \
-        --deter \
-        ${SEMANTIC_ARGS}
+    echo "Running with semantic analysis..."
+    python ./test.py ${BASE_ARGS} ${SEMANTIC_ARGS}
 else
-    # Standard evaluation
-    python ./test.py \
-        ${data_cfg_path} \
-        ${main_cfg_path} \
-        --ckpt_path=${ckpt_path} \
-        --gpus=${n_gpus_per_node} --num_nodes=${n_nodes} --accelerator="ddp" \
-        --batch_size=${batch_size} --num_workers=${torch_num_workers}\
-        --profiler_name=${profiler_name} \
-        --benchmark \
-        --megasize $size \
-        --npe \
-        --thr 0.1 \
-        --ransac_times 5 \
-        --deter
+    echo "=========================================="
+    echo "Standard CoMatch Evaluation (no semantic analysis)"
+    echo "=========================================="
+    echo "  Dump Dir: ${DUMP_DIR}"
+    echo "=========================================="
+    echo "To enable semantic analysis, set SEMANTIC_CACHE_DIR"
+    echo "=========================================="
+
+    python ./test.py ${BASE_ARGS}
 fi

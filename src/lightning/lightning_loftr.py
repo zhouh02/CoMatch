@@ -1,5 +1,6 @@
 
 from collections import defaultdict
+import json
 import pprint
 from loguru import logger
 from pathlib import Path
@@ -22,11 +23,14 @@ from src.utils.plotting import make_matching_figures
 from src.utils.comm import gather, all_gather
 from src.utils.misc import lower_config, flattenList
 from src.utils.profiler import PassThroughProfiler
+from src.utils.semantic_consistency import SemanticLabelCache, compute_semantic_match_stats
 
 from torch.profiler import profile
 
 class PL_LoFTR(pl.LightningModule):
-    def __init__(self, config, pretrained_ckpt=None, profiler=None, dump_dir=None):
+    def __init__(self, config, pretrained_ckpt=None, profiler=None, dump_dir=None,
+                 semantic_cache_dir=None, semantic_ignore_labels=None,
+                 semantic_conf_thr=None, semantic_dump_name=None):
         """
         TODO:
             - use the new version of PL logging API.
@@ -55,6 +59,27 @@ class PL_LoFTR(pl.LightningModule):
         self.end_event = torch.cuda.Event(enable_timing=True)
         self.total_ms = 0
         self.ms_1 = 0
+
+        # Semantic consistency analysis
+        self.semantic_cache_dir = semantic_cache_dir
+        self.semantic_ignore_labels = None
+        if semantic_ignore_labels:
+            try:
+                self.semantic_ignore_labels = set(int(x) for x in semantic_ignore_labels.split(','))
+            except ValueError:
+                logger.warning(f"Invalid semantic_ignore_labels format: {semantic_ignore_labels}")
+        self.semantic_conf_thr = semantic_conf_thr if semantic_conf_thr and semantic_conf_thr > 0 else None
+        self.semantic_dump_name = semantic_dump_name or 'semantic_matches'
+        self._semantic_cache = None
+        self._pair_semantic_stats = []
+
+        if self.semantic_cache_dir:
+            try:
+                self._semantic_cache = SemanticLabelCache(self.semantic_cache_dir)
+                logger.info(f"Semantic label cache initialized from: {semantic_cache_dir}")
+            except Exception as e:
+                logger.warning(f"Failed to initialize semantic cache: {e}")
+                self.semantic_cache_dir = None
 
     def configure_optimizers(self):
         # FIXME: The scheduler did not work properly when `--resume_from_checkpoint`
@@ -243,7 +268,11 @@ class PL_LoFTR(pl.LightningModule):
                 self.total_ms += self.start_event.elapsed_time(self.end_event)
 
         ret_dict, rel_pair_names = self._compute_metrics(batch)
-  
+
+        # Semantic consistency analysis
+        if self.semantic_cache_dir and self._semantic_cache:
+            self._compute_semantic_stats(batch)
+
         return ret_dict
 
     def test_epoch_end(self, outputs):
@@ -256,6 +285,206 @@ class PL_LoFTR(pl.LightningModule):
             print('Averaged Matching time over 1500 pairs: {:.2f} ms'.format(self.total_ms / 1500))
             val_metrics_4tb = aggregate_metrics(metrics, self.config.TRAINER.EPI_ERR_THR, config=self.config)
             logger.info('\n' + pprint.pformat(val_metrics_4tb))
+
+        # Aggregate and write semantic statistics
+        if self.semantic_cache_dir and self._semantic_cache:
+            self._aggregate_semantic_stats()
+
+    def _compute_semantic_stats(self, batch):
+        """Compute semantic consistency statistics for a batch."""
+        try:
+            mkpts0_f = batch['mkpts0_f'].cpu().numpy()
+            mkpts1_f = batch['mkpts1_f'].cpu().numpy()
+            mconf = batch.get('mconf')
+            mconf = mconf.cpu().numpy() if mconf is not None else None
+            m_bids = batch.get('m_bids')
+            m_bids = m_bids.cpu().numpy() if m_bids is not None else None
+            pair_names = batch.get('pair_names')
+
+            if pair_names is None:
+                return
+
+            bs = batch['image0'].size(0)
+
+            for b in range(bs):
+                # Extract matches for this pair
+                if m_bids is not None:
+                    mask = m_bids == b
+                    pair_mkpts0 = mkpts0_f[mask]
+                    pair_mkpts1 = mkpts1_f[mask]
+                    pair_conf = mconf[mask] if mconf is not None else None
+                else:
+                    if bs == 1:
+                        pair_mkpts0 = mkpts0_f
+                        pair_mkpts1 = mkpts1_f
+                        pair_conf = mconf
+                    else:
+                        logger.warning(
+                            f"Batch size > 1 but no m_bids in batch. "
+                            f"Skipping semantic stats for batch."
+                        )
+                        return
+
+                # Get pair names
+                if isinstance(pair_names, (list, tuple)):
+                    if isinstance(pair_names[0], (list, tuple)):
+                        # pair_names = [(name0, name1), ...]
+                        name0, name1 = pair_names[b]
+                    else:
+                        # pair_names might be two separate lists or other structure
+                        name0, name1 = pair_names[0], pair_names[1]
+                else:
+                    name0, name1 = str(pair_names[0]), str(pair_names[1])
+
+                pair_id = f"{Path(name0).stem}_{Path(name1).stem}"
+
+                # Compute stats for this pair
+                stat = self._compute_pair_semantic_stats(
+                    pair_id, name0, name1,
+                    pair_mkpts0, pair_mkpts1, pair_conf
+                )
+                self._pair_semantic_stats.append(stat)
+
+        except Exception as e:
+            logger.warning(f"Failed to compute semantic stats: {e}")
+
+    def _compute_pair_semantic_stats(self, pair_id, name0, name1, mkpts0, mkpts1, conf):
+        """Compute semantic stats for a single pair."""
+        try:
+            sem0 = self._semantic_cache.get_label(name0)
+            sem1 = self._semantic_cache.get_label(name1)
+
+            stats = compute_semantic_match_stats(
+                mkpts0, mkpts1, sem0, sem1,
+                conf=conf,
+                ignore_labels=self.semantic_ignore_labels,
+                conf_thr=self.semantic_conf_thr
+            )
+
+            return {
+                "pair_id": pair_id,
+                "image0": str(name0),
+                "image1": str(name1),
+                "num_matches": stats["num_matches"],
+                "num_after_conf": stats["num_after_conf"],
+                "num_in_bounds": stats["num_in_bounds"],
+                "num_valid_semantic": stats["num_valid_semantic"],
+                "num_same_semantic": stats["num_same_semantic"],
+                "num_cross_semantic": stats["num_cross_semantic"],
+                "cross_semantic_rate": stats["cross_semantic_rate"],
+                "skipped": False,
+                "skip_reason": None
+            }
+        except FileNotFoundError as e:
+            return {
+                "pair_id": pair_id,
+                "image0": str(name0),
+                "image1": str(name1),
+                "skipped": True,
+                "skip_reason": str(e)
+            }
+        except Exception as e:
+            return {
+                "pair_id": pair_id,
+                "image0": str(name0),
+                "image1": str(name1),
+                "skipped": True,
+                "skip_reason": f"Error: {e}"
+            }
+
+    def _aggregate_semantic_stats(self):
+        """Aggregate semantic stats from all ranks and write output files."""
+        try:
+            rank = self.trainer.global_rank
+        except Exception:
+            rank = 0
+
+        try:
+            world_size = self.trainer.world_size
+        except Exception:
+            world_size = 1
+
+        # Write per-rank JSONL first
+        if self._pair_semantic_stats:
+            rank_jsonl = Path(self.dump_dir or '.') / f"{self.semantic_dump_name}_rank{rank}.jsonl"
+            rank_jsonl.parent.mkdir(parents=True, exist_ok=True)
+            with open(rank_jsonl, 'w') as f:
+                for stat in self._pair_semantic_stats:
+                    f.write(json.dumps(stat) + '\n')
+            logger.info(f"[rank {rank}] Wrote {len(self._pair_semantic_stats)} pairs to {rank_jsonl}")
+
+        # Only rank 0 aggregates and writes summary
+        if rank != 0:
+            return
+
+        # Gather all stats from all ranks
+        all_stats = []
+        for r in range(world_size):
+            r_jsonl = Path(self.dump_dir or '.') / f"{self.semantic_dump_name}_rank{r}.jsonl"
+            if not r_jsonl.exists():
+                continue
+            with open(r_jsonl, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        all_stats.append(json.loads(line))
+
+        if not all_stats:
+            return
+
+        # Write merged JSONL
+        merged_jsonl = Path(self.dump_dir or '.') / f"{self.semantic_dump_name}.jsonl"
+        with open(merged_jsonl, 'w') as f:
+            for stat in all_stats:
+                f.write(json.dumps(stat) + '\n')
+
+        # Compute summary
+        num_pairs = len(all_stats)
+        num_skipped = sum(1 for s in all_stats if s.get('skipped', False))
+        total_matches = sum(s.get('num_matches', 0) for s in all_stats)
+        total_after_conf = sum(s.get('num_after_conf', 0) for s in all_stats)
+        total_in_bounds = sum(s.get('num_in_bounds', 0) for s in all_stats)
+        total_valid_semantic = sum(s.get('num_valid_semantic', 0) for s in all_stats)
+        total_same_semantic = sum(s.get('num_same_semantic', 0) for s in all_stats)
+        total_cross_semantic = sum(s.get('num_cross_semantic', 0) for s in all_stats)
+
+        # Micro cross semantic rate
+        if total_valid_semantic > 0:
+            micro_cross_semantic_rate = total_cross_semantic / total_valid_semantic
+        else:
+            micro_cross_semantic_rate = float("nan")
+
+        # Macro cross semantic rate (mean of non-skipped, non-nan rates)
+        valid_rates = []
+        for s in all_stats:
+            if not s.get('skipped', False):
+                rate = s.get('cross_semantic_rate')
+                if rate is not None and not (isinstance(rate, float) and np.isnan(rate)):
+                    valid_rates.append(rate)
+        macro_cross_semantic_rate = float(np.mean(valid_rates)) if valid_rates else float("nan")
+
+        summary = {
+            "num_pairs": num_pairs,
+            "num_skipped_pairs": num_skipped,
+            "total_matches": total_matches,
+            "total_after_conf": total_after_conf,
+            "total_in_bounds": total_in_bounds,
+            "total_valid_semantic": total_valid_semantic,
+            "total_same_semantic": total_same_semantic,
+            "total_cross_semantic": total_cross_semantic,
+            "micro_cross_semantic_rate": micro_cross_semantic_rate,
+            "macro_cross_semantic_rate": macro_cross_semantic_rate,
+        }
+
+        # Write summary
+        summary_path = Path(self.dump_dir or '.') / f"{self.semantic_dump_name}_summary.json"
+        with open(summary_path, 'w') as f:
+            json.dump(summary, f, indent=2)
+
+        logger.info(f"Semantic consistency summary written to {summary_path}")
+        logger.info(f"  Pairs: {num_pairs} total, {num_skipped} skipped")
+        logger.info(f"  Matches: {total_matches} total, {total_valid_semantic} valid semantic")
+        logger.info(f"  Cross semantic: {total_cross_semantic} ({micro_cross_semantic_rate:.4f} micro rate)")
 
 
     

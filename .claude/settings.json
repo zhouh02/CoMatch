@@ -4,7 +4,8 @@
       "Bash(python -c ' *)",
       "Bash(python -m py_compile tools/semantic_covis/semantic_match_diagnostic.py test_semantic.py)",
       "Bash(python -m py_compile tools/semantic_covis/select_semantic_diagnostic_pairs.py)",
-      "Bash(echo \"EXIT:$?\")"
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(python -m pytest tests/test_semantic_consistency.py -v)"
     ]
   }
 }
