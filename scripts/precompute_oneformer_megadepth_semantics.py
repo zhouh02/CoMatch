@@ -406,8 +406,13 @@ def main():
         print("Please install: pip install transformers")
         sys.exit(1)
 
-    processor = OneFormerProcessor.from_pretrained(args.model_id)
-    model = OneFormerForUniversalSegmentation.from_pretrained(args.model_id)
+    # from_pretrained supports both HuggingFace hub IDs and local directories
+    # For local models, pass the local path as model_id
+    model_path = args.model_id
+    if os.path.isdir(model_path):
+        print(f"Loading model from local directory: {model_path}")
+    processor = OneFormerProcessor.from_pretrained(model_path, local_files_only=True)
+    model = OneFormerForUniversalSegmentation.from_pretrained(model_path, local_files_only=True)
     model = model.to(args.device)
     model.eval()
 
