@@ -39,6 +39,7 @@ from typing import List, Optional, Tuple
 from tqdm import tqdm
 
 import numpy as np
+import torch
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -400,7 +401,6 @@ def main():
 
     try:
         from transformers import OneFormerProcessor, OneFormerForUniversalSegmentation
-        import torch
     except ImportError as e:
         print(f"\nERROR: transformers not installed: {e}")
         print("Please install: pip install transformers")
