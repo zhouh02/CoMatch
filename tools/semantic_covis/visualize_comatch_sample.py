@@ -44,6 +44,8 @@ def parse_args():
     parser.add_argument('--output_path', type=str, default='outputs/sample_vis/match.png')
     parser.add_argument('--dpi', type=int, default=150)
     parser.add_argument('--no_npe', action='store_true', help='Disable NPE positional encoding')
+    parser.add_argument('--original_size', action='store_true',
+                        help='Visualize matches on original image size instead of processed size')
     return parser.parse_args()
 
 
@@ -88,45 +90,90 @@ def run_inference(model, image0, image1, scale0, scale1, mask0, mask1):
 
 
 def visualize(img0_raw, img1_raw, mkpts0, mkpts1, mconf, scale0, scale1,
-              max_matches=300, output_path='match.png', dpi=150):
-    """Draw matches on processed images and save."""
-    scale0_np = scale0.numpy()
-    scale1_np = scale1.numpy()
+              max_matches=300, output_path='match.png', dpi=150, use_original_size=False):
+    """Draw matches on images and save.
 
-    # Convert mkpts from original coords to processed-image coords
-    mkpts0_proc = mkpts0 / scale0_np[[1, 0]]
-    mkpts1_proc = mkpts1 / scale1_np[[1, 0]]
+    Args:
+        img0_raw: Original image 0 (H, W, 3) or (H, W) grayscale
+        img1_raw: Original image 1
+        mkpts0: Match keypoints in original image coordinates (N, 2)
+        mkpts1: Match keypoints in original image coordinates (N, 2)
+        mconf: Match confidence scores
+        scale0: Scale factor [orig_w/processed_w, orig_h/processed_h]
+        scale1: Scale factor for image 1
+        max_matches: Maximum matches to draw
+        output_path: Output file path
+        dpi: Figure DPI
+        use_original_size: If True, visualize on original image size.
+                          If False, visualize on processed (CoMatch input) size.
+    """
+    scale0_np = scale0.numpy() if hasattr(scale0, 'numpy') else np.array(scale0)
+    scale1_np = scale1.numpy() if hasattr(scale1, 'numpy') else np.array(scale1)
+
+    if use_original_size:
+        # Visualize on original image size
+        # mkpts0/mkpts1 are already in original image coordinates
+        # Just resize original images to match original dimensions (they already are)
+        img0_vis = img0_raw if img0_raw.ndim == 3 else cv2.cvtColor(img0_raw, cv2.COLOR_GRAY2BGR)
+        img1_vis = img1_raw if img1_raw.ndim == 3 else cv2.cvtColor(img1_raw, cv2.COLOR_GRAY2BGR)
+        mkpts0_draw = mkpts0.copy()
+        mkpts1_draw = mkpts1.copy()
+
+        # Ensure both images have same height for side-by-side display
+        h = max(img0_vis.shape[0], img1_vis.shape[0])
+        if img0_vis.shape[0] != h:
+            img0_vis = cv2.resize(img0_vis, (img0_vis.shape[1], h))
+        if img1_vis.shape[0] != h:
+            img1_vis = cv2.resize(img1_vis, (img1_vis.shape[1], h))
+
+        text = [
+            f'#Matches: {len(mkpts0)}',
+            f'Image0: {img0_raw.shape[1]}x{img0_raw.shape[0]} (original)',
+            f'Image1: {img1_raw.shape[1]}x{img1_raw.shape[0]} (original)',
+        ]
+    else:
+        # Convert mkpts from original coords to processed-image coords
+        mkpts0_proc = mkpts0 / scale0_np[[1, 0]]
+        mkpts1_proc = mkpts1 / scale1_np[[1, 0]]
+
+        # Resize raw images to processed size for display
+        h0_vis = int(round(img0_raw.shape[0] * scale0_np[1]))
+        w0_vis = int(round(img0_raw.shape[1] * scale0_np[0]))
+        h1_vis = int(round(img1_raw.shape[0] * scale1_np[1]))
+        w1_vis = int(round(img1_raw.shape[1] * scale1_np[0]))
+        img0_vis = cv2.resize(img0_raw, (w0_vis, h0_vis))
+        img1_vis = cv2.resize(img1_raw, (w1_vis, h1_vis))
+        mkpts0_draw = mkpts0_proc
+        mkpts1_draw = mkpts1_proc
+
+        text = [
+            f'#Matches: {len(mkpts0)}',
+            f'Image0: {img0_raw.shape[1]}x{img0_raw.shape[0]} -> {w0_vis}x{h0_vis}',
+            f'Image1: {img1_raw.shape[1]}x{img1_raw.shape[0]} -> {w1_vis}x{h1_vis}',
+        ]
 
     # Subsample if too many
-    n = len(mkpts0_proc)
+    n = len(mkpts0_draw)
     if n > max_matches:
         idx = np.sort(np.random.choice(n, max_matches, replace=False))
-        mkpts0_proc = mkpts0_proc[idx]
-        mkpts1_proc = mkpts1_proc[idx]
-        mconf = mconf[idx]
+        mkpts0_draw = mkpts0_draw[idx]
+        mkpts1_draw = mkpts1_draw[idx]
+        mconf = mconf[idx] if len(mconf) >= n else mconf[idx]
 
     # Color by confidence (green=high, red=low)
     alpha = dynamic_alpha(n)
     color = error_colormap(1 - mconf, 0.5, alpha=alpha)
 
-    # Resize raw images to processed size for display
-    h0_vis = int(round(img0_raw.shape[0] * scale0_np[1]))
-    w0_vis = int(round(img0_raw.shape[1] * scale0_np[0]))
-    h1_vis = int(round(img1_raw.shape[0] * scale1_np[1]))
-    w1_vis = int(round(img1_raw.shape[1] * scale1_np[0]))
-    img0_vis = cv2.resize(img0_raw, (w0_vis, h0_vis))
-    img1_vis = cv2.resize(img1_raw, (w1_vis, h1_vis))
-
-    text = [
-        f'#Matches: {n}',
-        f'Image0: {img0_raw.shape[1]}x{img0_raw.shape[0]} -> {w0_vis}x{h0_vis}',
-        f'Image1: {img1_raw.shape[1]}x{img1_raw.shape[0]} -> {w1_vis}x{h1_vis}',
-    ]
+    # Convert grayscale to BGR for make_matching_figure
+    if img0_vis.ndim == 2:
+        img0_vis = cv2.cvtColor(img0_vis, cv2.COLOR_GRAY2BGR)
+    if img1_vis.ndim == 2:
+        img1_vis = cv2.cvtColor(img1_vis, cv2.COLOR_GRAY2BGR)
 
     os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
     make_matching_figure(
         img0_vis, img1_vis,
-        mkpts0_proc, mkpts1_proc, color,
+        mkpts0_draw, mkpts1_draw, color,
         text=text, dpi=dpi, path=output_path,
     )
     logger.info(f'Saved: {output_path}  ({n} matches)')
@@ -183,6 +230,7 @@ def main():
         max_matches=args.max_matches,
         output_path=args.output_path,
         dpi=args.dpi,
+        use_original_size=args.original_size,
     )
 
 

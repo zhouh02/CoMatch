@@ -66,19 +66,24 @@ def make_matching_figure(
         return fig
 
 
-def _make_evaluation_figure(data, b_id, alpha='dynamic'):
+def _make_evaluation_figure(data, b_id, alpha='dynamic', use_original_size=False, image_root=None):
     b_mask = data['m_bids'] == b_id
     conf_thr = _compute_conf_thresh(data)
-    
-    img0 = (data['image0'][b_id][0].cpu().numpy() * 255).round().astype(np.int32)
-    img1 = (data['image1'][b_id][0].cpu().numpy() * 255).round().astype(np.int32)
+
+    # Get processed images (resize+padding)
+    img0_proc = (data['image0'][b_id][0].cpu().numpy() * 255).round().astype(np.int32)
+    img1_proc = (data['image1'][b_id][0].cpu().numpy() * 255).round().astype(np.int32)
+
+    # mkpts0_f/mkpts1_f are in ORIGINAL image coordinate space
     kpts0 = data['mkpts0_f'][b_mask].cpu().numpy()
     kpts1 = data['mkpts1_f'][b_mask].cpu().numpy()
-    
-    # for megadepth, we visualize matches on the resized image
+
+    # for megadepth, mkpts are in original image space
     if 'scale0' in data:
-        kpts0 = kpts0 / data['scale0'][b_id].cpu().numpy()[[1, 0]]
-        kpts1 = kpts1 / data['scale1'][b_id].cpu().numpy()[[1, 0]]
+        # kpts are already in original image coords from fine_matching
+        # scale0 = [orig_w/processed_w, orig_h/processed_h]
+        # So original coords = kpts (no conversion needed)
+        pass
 
     epi_errs = data['epi_errs'][b_mask].cpu().numpy()
     correct_mask = epi_errs < conf_thr
@@ -86,35 +91,79 @@ def _make_evaluation_figure(data, b_id, alpha='dynamic'):
     n_correct = np.sum(correct_mask)
     n_gt_matches = int(data['conf_matrix_gt'][b_id].sum().cpu())
     recall = 0 if n_gt_matches == 0 else n_correct / (n_gt_matches)
-    # recall might be larger than 1, since the calculation of conf_matrix_gt
-    # uses groundtruth depths and camera poses, but epipolar distance is used here.
 
-    # matching info
     if alpha == 'dynamic':
         alpha = dynamic_alpha(len(correct_mask))
     color = error_colormap(epi_errs, conf_thr, alpha=alpha)
-    
+
     text = [
         f'#Matches {len(kpts0)}',
         f'Precision({conf_thr:.2e}) ({100 * precision:.1f}%): {n_correct}/{len(kpts0)}',
         f'Recall({conf_thr:.2e}) ({100 * recall:.1f}%): {n_correct}/{n_gt_matches}'
     ]
-    
-    # make the figure
-    figure = make_matching_figure(img0, img1, kpts0, kpts1,
-                                  color, text=text)
+
+    # If use_original_size is requested but image_root not provided, fall back to processed
+    if use_original_size and image_root:
+        import cv2
+        import os
+        from pathlib import Path
+
+        # Get original image paths from batch
+        pair_names = data.get('pair_names', [])
+        if isinstance(pair_names, (list, tuple)) and len(pair_names) >= 2:
+            img0_rel = str(pair_names[0])
+            img1_rel = str(pair_names[1])
+
+            # Handle list-wrapped paths
+            if img0_rel.startswith('[') or img0_rel.startswith('('):
+                import ast
+                try:
+                    img0_rel = str(ast.literal_eval(img0_rel)[0])
+                    img1_rel = str(ast.literal_eval(img1_rel)[0])
+                except:
+                    pass
+
+            # Load original images
+            img0_path = Path(image_root) / img0_rel if image_root else Path(img0_rel)
+            img1_path = Path(image_root) / img1_rel if image_root else Path(img1_rel)
+
+            if img0_path.exists() and img1_path.exists():
+                img0_orig = cv2.imread(str(img0_path), cv2.IMREAD_GRAYSCALE)
+                img1_orig = cv2.imread(str(img1_path), cv2.IMREAD_GRAYSCALE)
+                if img0_orig is not None and img1_orig is not None:
+                    text.append(f'Original size: {img0_orig.shape[1]}x{img0_orig.shape[0]} | {img1_orig.shape[1]}x{img1_orig.shape[0]}')
+                    figure = make_matching_figure(img0_orig, img1_orig, kpts0, kpts1, color, text=text)
+                    return figure
+
+    # Fallback: visualize on processed images (kpts in original coords -> need to convert back)
+    # kpts are in original coords, but we want to show on processed images
+    scale0 = data['scale0'][b_id].cpu().numpy()
+    scale1 = data['scale1'][b_id].cpu().numpy()
+    kpts0_proc = kpts0 / scale0[[1, 0]]  # convert original -> processed
+    kpts1_proc = kpts1 / scale1[[1, 0]]
+
+    # Resize processed images to common size for display
+    h0, w0 = img0_proc.shape
+    h1, w1 = img1_proc.shape
+    max_h = max(h0, h1)
+    img0_display = cv2.resize(img0_proc, (w0, max_h)) if h0 < max_h else img0_proc
+    img1_display = cv2.resize(img1_proc, (w1, max_h)) if h1 < max_h else img1_proc
+
+    figure = make_matching_figure(img0_display, img1_display, kpts0_proc, kpts1_proc, color, text=text)
     return figure
 
 def _make_confidence_figure(data, b_id):
     # TODO: Implement confidence figure
     raise NotImplementedError()
 
-def make_matching_figures(data, config, mode='evaluation'):
+def make_matching_figures(data, config, mode='evaluation', use_original_size=False, image_root=None):
     """ Make matching figures for a batch.
-    
+
     Args:
         data (Dict): a batch updated by PL_LoFTR.
         config (Dict): matcher config
+        use_original_size (bool): if True, visualize on original image sizes
+        image_root (str): root directory for loading original images
     Returns:
         figures (Dict[str, List[plt.figure]]
     """
@@ -124,7 +173,9 @@ def make_matching_figures(data, config, mode='evaluation'):
         if mode == 'evaluation':
             fig = _make_evaluation_figure(
                 data, b_id,
-                alpha=config.TRAINER.PLOT_MATCHES_ALPHA)
+                alpha=config.TRAINER.PLOT_MATCHES_ALPHA,
+                use_original_size=use_original_size,
+                image_root=image_root)
         elif mode == 'confidence':
             fig = _make_confidence_figure(data, b_id)
         else:

@@ -193,6 +193,20 @@ def load_oneformer_segmentation(image_path: str, oneformer_dir: Path) -> Optiona
     Returns:
         [H, W] numpy array of label IDs, or None if not found
     """
+    seg_data = load_oneformer_segmentation_with_meta(image_path, oneformer_dir)
+    return seg_data['semantic_label'] if seg_data else None
+
+
+def load_oneformer_segmentation_with_meta(image_path: str, oneformer_dir: Path) -> Optional[Dict]:
+    """Load OneFormer segmentation with metadata for coordinate mapping.
+
+    Args:
+        image_path: Relative or absolute path to image
+        oneformer_dir: Path to OneFormer output directory
+
+    Returns:
+        Dict with keys: semantic_label, height, width, orig_h, orig_w, or None if not found
+    """
     npz_dir = oneformer_dir / "npz"
 
     # Handle list-wrapped paths like "['path.jpg']"
@@ -227,14 +241,24 @@ def load_oneformer_segmentation(image_path: str, oneformer_dir: Path) -> Optiona
 
     try:
         data = np.load(npz_path, allow_pickle=True)
+        result = {
+            'semantic_label': None,
+            'height': int(data['height']) if 'height' in data else 0,
+            'width': int(data['width']) if 'width' in data else 0,
+            'orig_h': int(data['orig_h']) if 'orig_h' in data else int(data['height']) if 'height' in data else 0,
+            'orig_w': int(data['orig_w']) if 'orig_w' in data else int(data['width']) if 'width' in data else 0,
+        }
+
         # Find the label array - try different keys
         for key in ['semantic_label', 'label_map', 'segmentation', 'panoptic_seg', 'pred']:
             if key in data:
-                return data[key]
+                result['semantic_label'] = data[key]
+                break
         # If only one array, use it
-        if len(data.files) == 1:
-            return data[data.files[0]]
-        return None
+        if result['semantic_label'] is None and len(data.files) == 1:
+            result['semantic_label'] = data[data.files[0]]
+
+        return result if result['semantic_label'] is not None else None
     except Exception as e:
         print(f"Failed to load {npz_path}: {e}")
         return None
@@ -311,21 +335,35 @@ def draw_match_lines(
     error_only: bool = False,
     seg0_hw: Tuple[int, int] = None,
     seg1_hw: Tuple[int, int] = None,
+    img0_orig_hw: Tuple[int, int] = None,
+    img1_orig_hw: Tuple[int, int] = None,
 ) -> np.ndarray:
     """Draw match lines on concatenated left-right image.
 
-    Coordinates (seg_x0/y0/x1/y1) are in segmentation space.
-    Images are resized to match segmentation dimensions before drawing,
-    so match lines align correctly.
+    This function handles coordinate mapping between:
+    - seg_x0/y0/x1/y1: coordinates in segmentation space
+    - img_left/right: input images (can be original or resized)
+
+    The coordinate system logic:
+    1. seg_x0/y0 are in ONE_FORMER segmentation coordinate space
+    2. OneFormer was run on ORIGINAL images (if target_size not specified)
+    3. So seg coordinates == original image coordinates when seg_hw == orig_hw
+
+    To handle all cases correctly:
+    - If img dimensions == seg dimensions: use seg coords directly
+    - If img dimensions == orig dimensions (but seg != orig): need coordinate transform
+    - Best practice: always use original image dimensions and convert seg coords
 
     Args:
-        img_left: [H, W, 3] left image (original resolution)
-        img_right: [H, W, 3] right image (original resolution)
+        img_left: [H, W, 3] left image (should be original size for correct visualization)
+        img_right: [H, W, 3] right image (should be original size for correct visualization)
         matches: List of match dicts with seg_x0, seg_y0, seg_x1, seg_y1
         max_lines: Maximum number of lines to draw
         error_only: If True, only draw coarse error lines
         seg0_hw: Segmentation size (H, W) for left image
         seg1_hw: Segmentation size (H, W) for right image
+        img0_orig_hw: Original image size (H, W) for left image (for coordinate transform)
+        img1_orig_hw: Original image size (H, W) for right image (for coordinate transform)
 
     Returns:
         Concatenated image with match lines drawn
@@ -334,25 +372,40 @@ def draw_match_lines(
         return np.zeros((max(img_left.shape[0], img_right.shape[0]),
                         img_left.shape[1] + img_right.shape[1], 3), dtype=np.uint8)
 
-    # Resize images to segmentation dimensions so coordinates align directly
-    if seg0_hw is not None and seg0_hw[0] > 0 and seg0_hw[1] > 0:
-        img_left = cv2.resize(img_left, (seg0_hw[1], seg0_hw[0]))
-    if seg1_hw is not None and seg1_hw[0] > 0 and seg1_hw[1] > 0:
-        img_right = cv2.resize(img_right, (seg1_hw[1], seg1_hw[0]))
+    img_left_h, img_left_w = img_left.shape[:2]
+    img_right_h, img_right_w = img_right.shape[:2]
+
+    # Determine if we need coordinate transform
+    # seg coords are in seg_space, but we want to draw on img_left/right
+    need_transform = False
+    if seg0_hw and (seg0_hw[0] != img_left_h or seg0_hw[1] != img_left_w):
+        need_transform = True
+    if seg1_hw and (seg1_hw[0] != img_right_h or seg1_hw[1] != img_right_w):
+        need_transform = True
+
+    # If img is already at seg size, no transform needed (common case: seg_hw == orig_hw)
+    if not need_transform:
+        # Use seg coords directly - they are aligned with image dimensions
+        pass
+
+    # Otherwise, transform from seg_space to image_space
+    # This happens when OneFormer used target_size or img was loaded at different resolution
+    scale0_x = img_left_w / seg0_hw[1] if seg0_hw and seg0_hw[1] > 0 else 1.0
+    scale0_y = img_left_h / seg0_hw[0] if seg0_hw and seg0_hw[0] > 0 else 1.0
+    scale1_x = img_right_w / seg1_hw[1] if seg1_hw and seg1_hw[1] > 0 else 1.0
+    scale1_y = img_right_h / seg1_hw[0] if seg1_hw and seg1_hw[0] > 0 else 1.0
 
     # Ensure both images have same height for concatenation
-    h = max(img_left.shape[0], img_right.shape[0])
-    if img_left.shape[0] != h:
-        img_left = cv2.resize(img_left, (img_left.shape[1], h))
-    if img_right.shape[0] != h:
-        img_right = cv2.resize(img_right, (img_right.shape[1], h))
+    h = max(img_left_h, img_right_h)
+    if img_left_h != h:
+        img_left = cv2.resize(img_left, (img_left_w, h))
+        scale0_y *= h / img_left_h  # adjust y scale if we resize
+    if img_right_h != h:
+        img_right = cv2.resize(img_right, (img_right_w, h))
+        scale1_y *= h / img_right_h  # adjust y scale if we resize
 
     w_left = img_left.shape[1]
     w_right = img_right.shape[1]
-
-    # Compute scale from seg-space to canvas-space (needed if heights were adjusted)
-    scale_y_left = h / seg0_hw[0] if seg0_hw else 1.0
-    scale_y_right = h / seg1_hw[0] if seg1_hw else 1.0
 
     # Concatenate
     canvas = np.zeros((h, w_left + w_right, 3), dtype=np.uint8)
@@ -399,21 +452,21 @@ def draw_match_lines(
         indices = np.random.choice(len(filtered), max_lines, replace=False)
         filtered = [filtered[i] for i in indices]
 
-    # Draw lines using seg coordinates directly
+    # Draw lines with coordinate transform from seg_space to image_space
     for match in filtered:
-        x0 = match.get('seg_x0')
-        y0 = match.get('seg_y0')
-        x1 = match.get('seg_x1')
-        y1 = match.get('seg_y1')
+        seg_x0 = match.get('seg_x0')
+        seg_y0 = match.get('seg_y0')
+        seg_x1 = match.get('seg_x1')
+        seg_y1 = match.get('seg_y1')
 
-        if x0 is None or y0 is None or x1 is None or y1 is None:
+        if seg_x0 is None or seg_y0 is None or seg_x1 is None or seg_y1 is None:
             continue
 
-        # Scale y to match canvas height (if heights were adjusted for concatenation)
-        y0_draw = y0 * scale_y_left
-        y1_draw = y1 * scale_y_right
-        x0_draw = x0
-        x1_draw = x1
+        # Transform from segmentation space to image space
+        x0_draw = seg_x0 * scale0_x
+        y0_draw = seg_y0 * scale0_y
+        x1_draw = seg_x1 * scale1_x
+        y1_draw = seg_y1 * scale1_y
 
         # Determine color
         if not match.get('coarse_consistent', True):
@@ -590,27 +643,41 @@ def visualize_pair(
     img0_h, img0_w = img0.shape[:2]
     img1_h, img1_w = img1.shape[:2]
 
-    # Load segmentation
-    seg0 = load_oneformer_segmentation(image0, oneformer_dir)
-    seg1 = load_oneformer_segmentation(image1, oneformer_dir)
+    # Load segmentation with metadata for coordinate mapping
+    seg0_data = load_oneformer_segmentation_with_meta(image0, oneformer_dir)
+    seg1_data = load_oneformer_segmentation_with_meta(image1, oneformer_dir)
 
     # Get segmentation dimensions
+    seg0 = seg0_data['semantic_label'] if seg0_data else None
+    seg1 = seg1_data['semantic_label'] if seg1_data else None
     seg0_h, seg0_w = seg0.shape[:2] if seg0 is not None else (img0_h, img0_w)
     seg1_h, seg1_w = seg1.shape[:2] if seg1 is not None else (img1_h, img1_w)
 
-    print(f"  Pair {rank_str}: img0={img0_w}x{img0_h} seg0={seg0_w}x{seg0_h} | img1={img1_w}x{img1_h} seg1={seg1_w}x{seg1_h}")
+    # Get original image dimensions from segmentation metadata
+    # These are needed for coordinate transform if seg was run at different resolution
+    seg0_orig_h = seg0_data['orig_h'] if seg0_data else seg0_h
+    seg0_orig_w = seg0_data['orig_w'] if seg0_data else seg0_w
+    seg1_orig_h = seg1_data['orig_h'] if seg1_data else seg1_h
+    seg1_orig_w = seg1_data['orig_w'] if seg1_data else seg1_w
+
+    print(f"  Pair {rank_str}: img0={img0_w}x{img0_h} seg0={seg0_w}x{seg0_h} orig0={seg0_orig_w}x{seg0_orig_h} | img1={img1_w}x{img1_h} seg1={seg1_w}x{seg1_h} orig1={seg1_orig_w}x{seg1_orig_h}")
 
     # Build stats
     stats = build_pair_stats(matches)
 
     # ========== matches_all.png ==========
-    # Resize images to seg dimensions so coordinates align, then draw match lines
+    # Draw match lines: coordinates from seg space -> image space
+    # Key insight: seg_x0/y0 are in seg coordinates; we need to transform to img coordinates
+    # Since img (loaded from disk) == original image, and seg was run on original,
+    # the transform is: seg_coord * (img_size / seg_size)
     matches_canvas = draw_match_lines(
         img0, img1, matches,
         max_lines=max_lines,
         error_only=False,
         seg0_hw=(seg0_h, seg0_w),
         seg1_hw=(seg1_h, seg1_w),
+        img0_orig_hw=(img0_h, img0_w),
+        img1_orig_hw=(img1_h, img1_w),
     )
 
     title = f"Pair {rank_str}: {Path(image0).name} <-> {Path(image1).name}"
@@ -626,6 +693,8 @@ def visualize_pair(
         error_only=True,
         seg0_hw=(seg0_h, seg0_w),
         seg1_hw=(seg1_h, seg1_w),
+        img0_orig_hw=(img0_h, img0_w),
+        img1_orig_hw=(img1_h, img1_w),
     )
 
     title_err = f"Coarse Error Matches Only (n={stats['coarse_error_count']})"
@@ -659,6 +728,8 @@ def visualize_pair(
         'img1_size': [img1_h, img1_w],
         'seg0_size': [seg0_h, seg0_w],
         'seg1_size': [seg1_h, seg1_w],
+        'seg0_orig_size': [seg0_orig_h, seg0_orig_w],
+        'seg1_orig_size': [seg1_orig_h, seg1_orig_w],
         **stats,
     }
 
