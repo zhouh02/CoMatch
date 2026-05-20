@@ -1034,6 +1034,73 @@ def diagnose_batch(
             'exists_seg1': os.path.exists(exp1),
         }]
 
+    # ========== DEBUG: Check coordinate system consistency ==========
+    # CoMatch outputs mkpts in ORIGINAL image coordinates
+    # OneFormer seg was run on ORIGINAL images (if target_size not used)
+    # Both should be in the same coordinate system = original Megadepth image size
+
+    # Get original image dimensions from OneFormer seg metadata
+    seg0_orig_hw = (seg0.get('orig_h', seg0['height']), seg0.get('orig_w', seg0['width']))
+    seg1_orig_hw = (seg1.get('orig_h', seg1['height']), seg1.get('orig_w', seg1['width']))
+
+    # Get CoMatch's original image dimensions from batch scale info
+    # scale0 = [orig_w/processed_w, orig_h/processed_h]
+    # So orig_w = scale0[0] * processed_w, orig_h = scale0[1] * processed_h
+    comatch_orig_hw0 = None
+    comatch_orig_hw1 = None
+    if 'scale0' in batch and 'hw0_i' in batch:
+        scale0 = batch['scale0']
+        hw0_i = batch['hw0_i']
+        if hasattr(scale0, 'cpu'):
+            scale0 = scale0.cpu().numpy()
+        if isinstance(scale0, np.ndarray):
+            scale0 = scale0[0] if len(scale0.shape) > 1 else scale0
+        # orig_h = processed_h * scale_h (but scale = orig/processed, so orig = processed * scale)
+        # scale = [orig_w/processed_w, orig_h/processed_h] = [w/w_new, h/h_new]
+        # so: orig_w = scale[0] * processed_w, orig_h = scale[1] * processed_h
+        if isinstance(hw0_i, (list, tuple)):
+            processed_h, processed_w = hw0_i[0], hw0_i[1]
+        else:
+            processed_h, processed_w = hw0_i[0].item(), hw0_i[1].item() if hasattr(hw0_i[0], 'item') else hw0_i
+        comatch_orig_h = int(processed_h * scale0[1])
+        comatch_orig_w = int(processed_w * scale0[0])
+        comatch_orig_hw0 = (comatch_orig_h, comatch_orig_w)
+
+    if 'scale1' in batch and 'hw1_i' in batch:
+        scale1 = batch['scale1']
+        hw1_i = batch['hw1_i']
+        if hasattr(scale1, 'cpu'):
+            scale1 = scale1.cpu().numpy()
+        if isinstance(scale1, np.ndarray):
+            scale1 = scale1[0] if len(scale1.shape) > 1 else scale1
+        if isinstance(hw1_i, (list, tuple)):
+            processed_h, processed_w = hw1_i[0], hw1_i[1]
+        else:
+            processed_h, processed_w = hw1_i[0].item(), hw1_i[1].item() if hasattr(hw1_i[0], 'item') else hw1_i
+        comatch_orig_h = int(processed_h * scale1[1])
+        comatch_orig_w = int(processed_w * scale1[0])
+        comatch_orig_hw1 = (comatch_orig_h, comatch_orig_w)
+
+    # Get segmentation dimensions
+    seg0_hw = (seg0['height'], seg0['width'])
+    seg1_hw = (seg1['height'], seg1['width'])
+
+    # Compare: CoMatch original vs OneFormer seg dimensions
+    match0_consistent = False
+    match1_consistent = False
+    if comatch_orig_hw0 is not None:
+        match0_consistent = (comatch_orig_hw0[0] == seg0_orig_hw[0] and comatch_orig_hw0[1] == seg0_orig_hw[1])
+    if comatch_orig_hw1 is not None:
+        match1_consistent = (comatch_orig_hw1[0] == seg1_orig_hw[0] and comatch_orig_hw1[1] == seg1_orig_hw[1])
+
+    # Print debug info
+    debug_prefix = f"[{pair_key[:50]}...]" if pair_key and len(pair_key) > 50 else f"[{pair_key}]"
+    print(f"{debug_prefix}")
+    print(f"  CoMatch:   img0 orig={comatch_orig_hw0}  img1 orig={comatch_orig_hw1}")
+    print(f"  OneFormer: img0 seg={seg0_hw} (orig={seg0_orig_hw})  img1 seg={seg1_hw} (orig={seg1_orig_hw})")
+    print(f"  Match img0: {'TRUE' if match0_consistent else 'FALSE'} | Match img1: {'TRUE' if match1_consistent else 'FALSE'}")
+    print(f"  Both match: {'TRUE' if (match0_consistent and match1_consistent) else 'FALSE'}")
+
     # Determine coordinate mapping
     # mkpts0_f / mkpts1_f are in the processed image coordinates
     # Need to check if they match seg0 / seg1 dimensions
@@ -1100,6 +1167,15 @@ def diagnose_batch(
     # Also save original image size from segmentation if available
     result['orig_hw0'] = seg0.get('orig_hw', list(seg_hw))
     result['orig_hw1'] = seg1.get('orig_hw', (seg1['height'], seg1['width']))
+
+    # Save debug info for consistency check
+    result['comatch_orig_hw0'] = list(comatch_orig_hw0) if comatch_orig_hw0 else None
+    result['comatch_orig_hw1'] = list(comatch_orig_hw1) if comatch_orig_hw1 else None
+    result['seg0_orig_hw'] = list(seg0_orig_hw)
+    result['seg1_orig_hw'] = list(seg1_orig_hw)
+    result['img0_size_match'] = match0_consistent
+    result['img1_size_match'] = match1_consistent
+    result['both_size_match'] = (match0_consistent and match1_consistent)
 
     # Save whether coordinate mapping was needed
     result['coord_mapped'] = (match_hw != seg_hw)
