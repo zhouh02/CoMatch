@@ -326,18 +326,23 @@ class PL_LoFTR(pl.LightningModule):
                         return
 
                 # Get pair names
-                # After DataLoader collate, pair_names is a list/tuple of per-sample tuples:
-                #   [(name0, name1), ...] with length == batch_size
-                # Each element is a 2-tuple of image path strings.
-                if isinstance(pair_names, (list, tuple)) and len(pair_names) == bs:
-                    entry = pair_names[b]
-                    if isinstance(entry, (list, tuple)) and len(entry) == 2:
-                        name0, name1 = entry[0], entry[1]
+                # PyTorch DataLoader default_collate on a tuple field produces:
+                #   batch_size > 1:  [(name0_a, name1_a), (name0_b, name1_b), ...]
+                #   batch_size == 1: [name0, name1]  (collate unwraps the single tuple)
+                # Handle both cases.
+                if isinstance(pair_names, (list, tuple)):
+                    if len(pair_names) == 2 and isinstance(pair_names[0], str):
+                        # batch_size == 1, collate unwrapped the tuple
+                        name0, name1 = pair_names[0], pair_names[1]
+                    elif len(pair_names) == bs and isinstance(pair_names[b], (list, tuple)):
+                        # batch_size > 1, each entry is a 2-tuple
+                        name0, name1 = pair_names[b][0], pair_names[b][1]
                     else:
-                        logger.warning(f"Unexpected pair_names entry format: {type(entry)}")
+                        logger.warning(f"Unexpected pair_names format: len={len(pair_names)}, "
+                                       f"first_type={type(pair_names[0]) if pair_names else None}, bs={bs}")
                         return
                 else:
-                    logger.warning(f"Unexpected pair_names format: {type(pair_names)}, len={len(pair_names)}, bs={bs}")
+                    logger.warning(f"Unexpected pair_names type: {type(pair_names)}")
                     return
 
                 pair_id = f"{Path(name0).stem}_{Path(name1).stem}"
