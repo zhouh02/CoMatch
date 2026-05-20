@@ -55,6 +55,7 @@ class PL_LoFTR(pl.LightningModule):
         
         # Testing
         self.warmup = False
+        self.dump_dir = dump_dir
         self.start_event = torch.cuda.Event(enable_timing=True)
         self.end_event = torch.cuda.Event(enable_timing=True)
         self.total_ms = 0

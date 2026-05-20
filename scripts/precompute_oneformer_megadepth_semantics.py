@@ -53,17 +53,24 @@ from src.utils.semantic_consistency import (
 )
 
 
-def collect_megadepth_test_images(data_cfg_path: str) -> Tuple[List[str], int, int]:
+def collect_megadepth_test_images(data_cfg_path: str) -> Tuple[List[Tuple[str, str]], int, int]:
     """
     Collect unique image paths from MegaDepth test configuration.
+
+    Uses the actual MegaDepthDataset to get pair_names, guaranteeing
+    the same path format that will be used during CoMatch evaluation.
 
     Args:
         data_cfg_path: Path to MegaDepth data config file
 
     Returns:
-        Tuple of (image_paths, num_pairs, num_unique_images)
+        Tuple of (image_entries, num_pairs, num_unique_images)
+        where image_entries is a list of (abs_path, rel_path) tuples.
+        rel_path matches the format used in pair_names.
     """
     from src.config.default import get_cfg_defaults
+    from src.datasets.megadepth import MegaDepthDataset
+    from torch.utils.data import ConcatDataset
 
     # Load config using yacs (same as test.py)
     config = get_cfg_defaults()
@@ -76,51 +83,69 @@ def collect_megadepth_test_images(data_cfg_path: str) -> Tuple[List[str], int, i
     # Read scene list
     with open(scene_list_path, 'r') as f:
         npz_names = [name.split()[0] for name in f.readlines()]
+    npz_names = [f'{n}.npz' for n in npz_names]
 
-    image_paths = []
-    num_pairs = 0
-
-    print(f"Collecting images from {len(npz_names)} scenes...")
-
-    for scene_name in tqdm(npz_names, desc="Scanning scenes"):
-        npz_path = os.path.join(npz_root, f"{scene_name}.npz")
+    # Build datasets (same as MultiSceneDataModule does for test)
+    datasets = []
+    for npz_name in tqdm(npz_names, desc="Loading scene datasets"):
+        npz_path = os.path.join(npz_root, npz_name)
         if not os.path.exists(npz_path):
             print(f"Warning: Scene file not found: {npz_path}")
             continue
+        datasets.append(
+            MegaDepthDataset(
+                data_root,
+                npz_path,
+                mode='test',
+                min_overlap_score=0.0,
+                img_resize=config.DATASET.MGDPT_IMG_RESIZE,
+                df=config.DATASET.MGDPT_DF,
+                img_padding=config.DATASET.MGDPT_IMG_PAD,
+                depth_padding=config.DATASET.MGDPT_DEPTH_PAD,
+                fp16=False,
+            )
+        )
 
-        # Load scene info without creating full dataset
-        scene_data = np.load(npz_path, allow_pickle=True)
+    concat_ds = ConcatDataset(datasets)
+    num_pairs = len(concat_ds)
 
-        if 'pair_infos' not in scene_data:
-            print(f"Warning: No pair_infos in {npz_path}")
-            continue
-
-        pair_infos = scene_data['pair_infos']
-        num_pairs += len(pair_infos)
-
-        for pair_info in pair_infos:
-            idx0, idx1 = pair_info[0]
-            img_path_0 = scene_data['image_paths'][idx0]
-            img_path_1 = scene_data['image_paths'][idx1]
-
-            # Make absolute paths
-            abs_path_0 = os.path.join(data_root, img_path_0)
-            abs_path_1 = os.path.join(data_root, img_path_1)
-
-            image_paths.append(abs_path_0)
-            image_paths.append(abs_path_1)
-
-    # Deduplicate while preserving order
+    # Extract pair_names from each sample (rel_path format, no data_root prefix)
+    image_entries = []
     seen = set()
-    unique_paths = []
-    for p in image_paths:
-        # Normalize for deduplication
-        norm = normalize_semantic_path_key(p)
-        if norm not in seen:
-            seen.add(norm)
-            unique_paths.append(p)
 
-    return unique_paths, num_pairs, len(unique_paths)
+    for idx in tqdm(range(num_pairs), desc="Collecting image paths"):
+        # Find which sub-dataset and local index
+        cumlen = 0
+        for ds in datasets:
+            if idx < cumlen + len(ds):
+                local_idx = idx - cumlen
+                pair_info = ds.pair_infos[local_idx]
+                idx0, idx1 = pair_info[0]
+
+                # Get paths exactly as __getitem__ does
+                # scene_info['image_paths'] is a numpy array of strings
+                ip_array = ds.scene_info['image_paths']
+                rel_path_0 = str(ip_array[idx0])
+                rel_path_1 = str(ip_array[idx1])
+
+                abs_path_0 = os.path.join(data_root, rel_path_0)
+                abs_path_1 = os.path.join(data_root, rel_path_1)
+
+                for abs_p, rel_p in [(abs_path_0, rel_path_0), (abs_path_1, rel_path_1)]:
+                    norm = normalize_semantic_path_key(rel_p)
+                    if norm not in seen:
+                        seen.add(norm)
+                        image_entries.append((abs_p, rel_p))
+                break
+            cumlen += len(ds)
+
+    # Debug: print first few entries
+    print(f"\nFirst 3 image entries (abs_path, rel_path):")
+    for abs_p, rel_p in image_entries[:3]:
+        print(f"  abs: {abs_p}")
+        print(f"  rel: {rel_p}")
+
+    return image_entries, num_pairs, len(image_entries)
 
 
 def load_image_list(image_list_path: str) -> List[str]:
@@ -184,6 +209,7 @@ def run_oneformer_on_image(
 
 def save_semantic_label(
     image_path: str,
+    rel_path: str,
     label_map: np.ndarray,
     height: int,
     width: int,
@@ -195,7 +221,8 @@ def save_semantic_label(
     Save semantic label to npz file and update manifest.
 
     Args:
-        image_path: Original image path (used as manifest key)
+        image_path: Absolute path to original image (for reading)
+        rel_path: Relative path matching pair_names format (for manifest key)
         label_map: H x W label map
         height: Original image height
         width: Original image width
@@ -226,19 +253,9 @@ def save_semantic_label(
         task="semantic",
     )
 
-    # Create manifest key (relative path from megadepth root)
-    # Use normalized path as key
-    manifest_key = normalize_semantic_path_key(image_path)
-
-    # Try to make it relative to megadepth root for cleaner keys
-    rel_path = manifest_key
-    for prefix in ['data/megadepth/', 'data\\megadepth\\']:
-        if manifest_key.lower().startswith(prefix.lower()):
-            rel_path = manifest_key[len(prefix):]
-            break
-
-    # Update manifest
-    manifest[rel_path] = f"labels/{npz_filename}"
+    # Use rel_path directly as manifest key (matches pair_names format exactly)
+    manifest_key = normalize_semantic_path_key(rel_path)
+    manifest[manifest_key] = f"labels/{npz_filename}"
 
     return npz_path
 
@@ -345,28 +362,31 @@ def main():
     # Collect image paths
     if args.image_list:
         print(f"Loading image list from: {args.image_list}")
-        image_paths = load_image_list(args.image_list)
-        num_pairs = len(image_paths) // 2  # Approximate
-        num_unique = len(image_paths)
+        raw_paths = load_image_list(args.image_list)
+        # For image_list mode, use path as both abs and rel
+        image_entries = [(p, p) for p in raw_paths]
+        num_pairs = len(raw_paths) // 2  # Approximate
+        num_unique = len(raw_paths)
     else:
         print(f"Loading MegaDepth test images from config: {args.data_cfg}")
-        image_paths, num_pairs, num_unique = collect_megadepth_test_images(args.data_cfg)
+        image_entries, num_pairs, num_unique = collect_megadepth_test_images(args.data_cfg)
 
     print(f"\nSummary:")
     print(f"  Num pairs: {num_pairs}")
     print(f"  Num unique images: {num_unique}")
 
     if args.max_images:
-        image_paths = image_paths[:args.max_images]
+        image_entries = image_entries[:args.max_images]
         print(f"  Limited to first {args.max_images} images")
 
-    if not image_paths:
+    if not image_entries:
         print("No images to process")
         sys.exit(0)
 
     print(f"\nFirst few images:")
-    for p in image_paths[:5]:
-        print(f"  - {p}")
+    for abs_p, rel_p in image_entries[:5]:
+        print(f"  - abs: {abs_p}")
+        print(f"    rel: {rel_p}")
 
     # Setup output directory
     cache_dir = Path(args.cache_dir)
@@ -430,11 +450,10 @@ def main():
     print("Processing Images")
     print("=" * 60)
 
-    for img_path in tqdm(image_paths, desc="Running OneFormer"):
-        # Check if already processed
+    for abs_path, rel_path in tqdm(image_entries, desc="Running OneFormer"):
+        # Check if already processed (by rel_path key)
+        norm_key = normalize_semantic_path_key(rel_path)
         if not args.overwrite:
-            norm_key = normalize_semantic_path_key(img_path)
-            # Try both absolute and relative keys
             if norm_key in manifest or any(
                 normalize_semantic_path_key(k) == norm_key for k in manifest
             ):
@@ -442,27 +461,27 @@ def main():
                 continue
 
         # Check file exists
-        if not os.path.exists(img_path):
-            print(f"\nWarning: Image not found: {img_path}")
+        if not os.path.exists(abs_path):
+            print(f"\nWarning: Image not found: {abs_path}")
             errors += 1
             continue
 
         try:
-            # Run OneFormer
+            # Run OneFormer on the actual image file
             label_map, height, width = run_oneformer_on_image(
-                img_path, model, processor, args.device
+                abs_path, model, processor, args.device
             )
 
-            # Save
+            # Save with rel_path as manifest key (matches pair_names format)
             save_semantic_label(
-                img_path, label_map, height, width,
+                abs_path, rel_path, label_map, height, width,
                 args.cache_dir, args.model_id, manifest
             )
 
             processed += 1
 
         except Exception as e:
-            print(f"\nError processing {img_path}: {e}")
+            print(f"\nError processing {abs_path}: {e}")
             errors += 1
 
     # Save manifest
