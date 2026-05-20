@@ -326,15 +326,19 @@ class PL_LoFTR(pl.LightningModule):
                         return
 
                 # Get pair names
-                if isinstance(pair_names, (list, tuple)):
-                    if isinstance(pair_names[0], (list, tuple)):
-                        # pair_names = [(name0, name1), ...]
-                        name0, name1 = pair_names[b]
+                # After DataLoader collate, pair_names is a list/tuple of per-sample tuples:
+                #   [(name0, name1), ...] with length == batch_size
+                # Each element is a 2-tuple of image path strings.
+                if isinstance(pair_names, (list, tuple)) and len(pair_names) == bs:
+                    entry = pair_names[b]
+                    if isinstance(entry, (list, tuple)) and len(entry) == 2:
+                        name0, name1 = entry[0], entry[1]
                     else:
-                        # pair_names might be two separate lists or other structure
-                        name0, name1 = pair_names[0], pair_names[1]
+                        logger.warning(f"Unexpected pair_names entry format: {type(entry)}")
+                        return
                 else:
-                    name0, name1 = str(pair_names[0]), str(pair_names[1])
+                    logger.warning(f"Unexpected pair_names format: {type(pair_names)}, len={len(pair_names)}, bs={bs}")
+                    return
 
                 pair_id = f"{Path(name0).stem}_{Path(name1).stem}"
 
