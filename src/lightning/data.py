@@ -337,18 +337,23 @@ class MultiSceneDataModule(pl.LightningDataModule):
         """ Build validation dataloader for ScanNet / MegaDepth. """
         logger.info(f'[rank:{self.rank}/{self.world_size}]: Val Sampler and DataLoader re-init.')
         if not isinstance(self.val_dataset, abc.Sequence):
-            sampler = DistributedSampler(self.val_dataset, shuffle=False)
+            # Only use DistributedSampler when world_size > 1 (multi-GPU)
+            sampler = DistributedSampler(self.val_dataset, shuffle=False) if self.world_size > 1 else None
             return DataLoader(self.val_dataset, sampler=sampler, **self.val_loader_params)
         else:
             dataloaders = []
             for dataset in self.val_dataset:
-                sampler = DistributedSampler(dataset, shuffle=False)
+                sampler = DistributedSampler(dataset, shuffle=False) if self.world_size > 1 else None
                 dataloaders.append(DataLoader(dataset, sampler=sampler, **self.val_loader_params))
             return dataloaders
 
     def test_dataloader(self, *args, **kwargs):
         logger.info(f'[rank:{self.rank}/{self.world_size}]: Test Sampler and DataLoader re-init.')
-        sampler = DistributedSampler(self.test_dataset, shuffle=False)
+        # Only use DistributedSampler when world_size > 1 (multi-GPU)
+        if self.world_size > 1:
+            sampler = DistributedSampler(self.test_dataset, shuffle=False)
+        else:
+            sampler = None
         return DataLoader(self.test_dataset, sampler=sampler, **self.test_loader_params)
 
 
