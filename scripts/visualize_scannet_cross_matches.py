@@ -235,10 +235,74 @@ def draw_matches_vis(img0_rgb, img1_rgb, mkpts0, mkpts1, sem0, sem1,
     return len(cross_pts0), len(same_pts0), total_valid
 
 
+def draw_text_with_outline(img, text, org, font_scale=0.5, color=(255, 255, 255),
+                           thickness=1, outline_color=(0, 0, 0), outline_thickness=2):
+    """Draw text with a black outline for readability on any background."""
+    x, y = org
+    for dx in range(-outline_thickness, outline_thickness + 1):
+        for dy in range(-outline_thickness, outline_thickness + 1):
+            if dx == 0 and dy == 0:
+                continue
+            cv2.putText(img, text, (x + dx, y + dy),
+                        cv2.FONT_HERSHEY_SIMPLEX, font_scale,
+                        outline_color, 1, cv2.LINE_AA)
+    cv2.putText(img, text, org,
+                cv2.FONT_HERSHEY_SIMPLEX, font_scale,
+                color, thickness, cv2.LINE_AA)
+
+
+def draw_region_labels(canvas, sem, offset_x, offset_y, id2label, ignore_labels,
+                       min_area_ratio=0.005):
+    """Draw class name labels at the centroid of each semantic region."""
+    h, w = sem.shape
+    min_area = int(h * w * min_area_ratio)
+
+    unique_labels = np.unique(sem)
+    for label_id in unique_labels:
+        if ignore_labels and label_id in ignore_labels:
+            continue
+
+        mask = (sem == label_id).astype(np.uint8)
+        area = mask.sum()
+        if area < min_area:
+            continue
+
+        M = cv2.moments(mask)
+        if M["m00"] == 0:
+            continue
+        cx = int(M["m10"] / M["m00"])
+        cy = int(M["m01"] / M["m00"])
+
+        # Clamp to image bounds
+        cx = max(5, min(cx, w - 5))
+        cy = max(15, min(cy, h - 5))
+
+        label_name = id2label.get(int(label_id), f"#{label_id}")
+
+        # Scale font based on region area
+        area_ratio = area / (h * w)
+        if area_ratio > 0.15:
+            font_scale = 0.7
+        elif area_ratio > 0.05:
+            font_scale = 0.55
+        else:
+            font_scale = 0.45
+
+        draw_x = cx + offset_x
+        draw_y = cy + offset_y
+
+        draw_text_with_outline(canvas, label_name, (draw_x - 20, draw_y),
+                               font_scale=font_scale, color=(255, 255, 255),
+                               thickness=1, outline_color=(0, 0, 0),
+                               outline_thickness=2)
+
+
 def draw_semseg_vis(img0_rgb, img1_rgb, sem0, sem1, mkpts0, mkpts1,
                     sem0_color, sem1_color, ignore_labels, pair_info,
                     output_path, overlay_alpha, id2label):
-    """Draw segmentation overlay with match points."""
+    """Draw segmentation overlay with match points and region labels."""
+    from collections import Counter
+
     h0, w0 = img0_rgb.shape[:2]
     h1, w1 = img1_rgb.shape[:2]
 
@@ -257,6 +321,14 @@ def draw_semseg_vis(img0_rgb, img1_rgb, sem0, sem1, mkpts0, mkpts1,
     canvas[:, :max_w] = img0_pad
     canvas[:, max_w + gap:] = img1_pad
     canvas[:, max_w:max_w + gap] = 64
+
+    # Draw region labels
+    draw_region_labels(canvas, sem0, off_x0, off_y0, id2label, ignore_labels)
+    draw_region_labels(canvas, sem1, off_x1 + max_w + gap, off_y1, id2label, ignore_labels)
+
+    # Draw match points and collect cross-semantic pair breakdown
+    cross_pair_counter = Counter()  # (label0_name, label1_name) -> count
+    total_valid = 0
 
     if len(mkpts0) > 0:
         x0 = np.rint(mkpts0[:, 0]).astype(int)
@@ -279,6 +351,11 @@ def draw_semseg_vis(img0_rgb, img1_rgb, sem0, sem1, mkpts0, mkpts1,
                 color = (60, 220, 60)
             else:
                 color = (255, 60, 60)
+                name0 = id2label.get(int(l0), f"#{l0}")
+                name1 = id2label.get(int(l1), f"#{l1}")
+                cross_pair_counter[(name0, name1)] += 1
+
+            total_valid += 1
 
             cx0 = x0[i] + off_x0
             cy0 = y0[i] + off_y0
@@ -288,15 +365,29 @@ def draw_semseg_vis(img0_rgb, img1_rgb, sem0, sem1, mkpts0, mkpts1,
             cy1 = y1[i] + off_y1
             cv2.circle(canvas, (cx1, cy1), 2, color, -1, cv2.LINE_AA)
 
+    # Info bar with cross-semantic breakdown
     cross_rate = pair_info.get("cross_semantic_rate", 0)
     rate_str = f"{cross_rate:.4f}" if isinstance(cross_rate, float) else str(cross_rate)
+
+    # Build top cross-semantic pair strings
+    top_cross = cross_pair_counter.most_common(5)
+    cross_strs = [f"{n0}->{n1}:{cnt}" for (n0, n1), cnt in top_cross]
+
     texts = [
         f"SemSeg: {pair_info.get('pair_id', '?')}",
-        f"Rate: {rate_str}",
-        f"Green=Same  Red=Cross",
+        f"Rate: {rate_str}  Green=Same Red=Cross",
     ]
-    info_bar = make_info_bar(canvas_w, texts)
-    result = np.vstack([canvas, info_bar])
+    info_bar1 = make_info_bar(canvas_w, texts, bar_h=40)
+
+    if cross_strs:
+        cross_text = "Top cross: " + ", ".join(cross_strs)
+        info_bar2 = np.zeros((35, canvas_w, 3), dtype=np.uint8)
+        cv2.putText(info_bar2, cross_text, (10, 25),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                    (255, 150, 150), 1, cv2.LINE_AA)
+        result = np.vstack([canvas, info_bar1, info_bar2])
+    else:
+        result = np.vstack([canvas, info_bar1])
 
     cv2.imwrite(str(output_path), cv2.cvtColor(result, cv2.COLOR_RGB2BGR))
 
