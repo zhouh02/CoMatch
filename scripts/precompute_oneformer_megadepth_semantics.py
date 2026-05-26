@@ -581,8 +581,8 @@ def main():
 
         from transformers import OneFormerProcessor, OneFormerForUniversalSegmentation
         model_path = args.model_id
-        processor = OneFormerProcessor.from_pretrained(model_path, args.local_files_only)
-        model = OneFormerForUniversalSegmentation.from_pretrained(model_path, args.local_files_only)
+        processor = OneFormerProcessor.from_pretrained(model_path, local_files_only=args.local_files_only)
+        model = OneFormerForUniversalSegmentation.from_pretrained(model_path, local_files_only=args.local_files_only)
         model = model.to(args.device)
         model.eval()
 
@@ -753,8 +753,8 @@ def main():
     model_path = args.model_id
     if os.path.isdir(model_path):
         print(f"Loading model from local directory: {model_path}")
-    processor = OneFormerProcessor.from_pretrained(model_path, args.local_files_only)
-    model = OneFormerForUniversalSegmentation.from_pretrained(model_path, args.local_files_only)
+    processor = OneFormerProcessor.from_pretrained(model_path, local_files_only=args.local_files_only)
+    model = OneFormerForUniversalSegmentation.from_pretrained(model_path, local_files_only=args.local_files_only)
     model = model.to(args.device)
     model.eval()
 
