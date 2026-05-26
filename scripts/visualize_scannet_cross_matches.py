@@ -347,6 +347,10 @@ def main():
     config.merge_from_file(args.main_cfg)
     config.merge_from_file(args.data_cfg)
 
+    # Set NPE config for ScanNet (same as test.py --npe --scannetX/Y)
+    config.LOFTR.COARSE.NPE = [832, 832, args.scannetX, args.scannetX]
+    print(f"NPE config: {config.LOFTR.COARSE.NPE}")
+
     _config = lower_config(config)
     loftr_cfg = lower_config(_config["loftr"])
 
@@ -377,10 +381,6 @@ def main():
                 img_resize=(args.scannetX, args.scannetY),
             )
         )
-
-    # Set NPE config for ScanNet (same as test.py --npe --scannetX/Y)
-    config.LOFTR.COARSE.NPE = [832, 832, args.scannetX, args.scannetX]
-    print(f"NPE config: {config.LOFTR.COARSE.NPE}")
 
     # Load matcher
     print("\nLoading CoMatch matcher...")
