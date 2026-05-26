@@ -87,8 +87,11 @@ def collect_scannet_pairs(data_cfg_path: str) -> Tuple[List[Tuple[str, str, str]
 
     datasets = []
     for info in tqdm(scene_info_list, desc="Loading scene datasets"):
+        # scene_npz_name may or may not include .npz extension
         scene_npz_name = info[0]
-        npz_path = os.path.join(npz_root, f'{scene_npz_name}.npz')
+        if not scene_npz_name.endswith('.npz'):
+            scene_npz_name = f'{scene_npz_name}.npz'
+        npz_path = os.path.join(npz_root, scene_npz_name)
         if not os.path.exists(npz_path):
             print(f"Warning: Scene file not found: {npz_path}")
             continue
@@ -160,8 +163,11 @@ def collect_scannet_test_images(data_cfg_path: str) -> Tuple[List[Tuple[str, str
     # Build datasets
     datasets = []
     for info in tqdm(scene_info_list, desc="Loading scene datasets"):
+        # scene_npz_name may or may not include .npz extension
         scene_npz_name = info[0]
-        npz_path = os.path.join(npz_root, f'{scene_npz_name}.npz')
+        if not scene_npz_name.endswith('.npz'):
+            scene_npz_name = f'{scene_npz_name}.npz'
+        npz_path = os.path.join(npz_root, scene_npz_name)
         if not os.path.exists(npz_path):
             print(f"Warning: Scene file not found: {npz_path}")
             continue
