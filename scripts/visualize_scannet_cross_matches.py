@@ -70,6 +70,9 @@ def parse_args():
     parser.add_argument("--semantic_matches_jsonl", type=str, required=True)
     parser.add_argument("--output_dir", type=str, default="outputs/scannet_semantic_vis")
     parser.add_argument("--top_n", type=int, default=20)
+    parser.add_argument("--sort_order", type=str, default="desc",
+                        choices=["desc", "asc"],
+                        help="desc = highest cross rate first, asc = lowest first")
     parser.add_argument("--max_per_scene", type=int, default=0,
                         help="Max pairs per scene (0 = unlimited)")
     parser.add_argument("--scannetX", type=int, default=640)
@@ -414,7 +417,7 @@ def main():
     print(f"Loading semantic matches from: {args.semantic_matches_jsonl}")
     all_stats = load_jsonl(args.semantic_matches_jsonl)
     valid_stats = [s for s in all_stats if not s.get("skipped", False)]
-    valid_stats.sort(key=lambda x: x.get("cross_semantic_rate", 0), reverse=True)
+    valid_stats.sort(key=lambda x: x.get("cross_semantic_rate", 0), reverse=(args.sort_order == "desc"))
 
     top_pairs = select_diverse_pairs(valid_stats, args.top_n, args.max_per_scene)
 
