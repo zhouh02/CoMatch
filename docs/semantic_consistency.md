@@ -268,6 +268,57 @@ bash scripts/reproduce_test/indoor_semantic.sh
 | `SEMANTIC_DUMP_NAME` | `semantic_matches` | Output file base name |
 | `DUMP_DIR` | `outputs/comatch_full_scannet` | Dump directory |
 
+## ScanNet Analysis & Visualization
+
+### Cross-Class Analysis
+
+Analyze which semantic class combinations most frequently appear in cross-semantic matches:
+
+```bash
+python scripts/analyze_scannet_cross_class.py \
+    --semantic_matches_jsonl outputs/comatch_full_scannet/semantic_matches.jsonl \
+    --semantic_cache_dir outputs/scannet_semantic_cache \
+    --output_dir outputs/scannet_cross_class_analysis \
+    --top_n 30
+```
+
+Output:
+- `summary.json` — Aggregate statistics
+- `top_cross_pairs.json` — Top pairs by cross-semantic rate
+
+### Visualize Cross-Semantic Matches
+
+Generate side-by-side images with match lines and segmentation overlays:
+
+```bash
+python scripts/visualize_scannet_cross_matches.py \
+    --data_cfg configs/data/scannet_test_1500.py \
+    --main_cfg configs/loftr/comatch_full.py \
+    --ckpt_path weights/comatch_outdoor.ckpt \
+    --semantic_cache_dir outputs/scannet_semantic_cache \
+    --semantic_matches_jsonl outputs/comatch_full_scannet/semantic_matches.jsonl \
+    --output_dir outputs/scannet_semantic_vis \
+    --top_n 20 \
+    --scannetX 640 \
+    --scannetY 480
+```
+
+Output:
+- `matches/` — Original images with red lines (cross-semantic) and green lines (same-semantic)
+- `semseg/` — OneFormer segmentation overlay with colored match points
+- `index.json` — Metadata for all visualized pairs
+
+### ScanNet Coordinate System
+
+Unlike MegaDepth where mkpts*_f are directly in original coordinates, ScanNet requires an extra mapping step:
+
+1. ScanNet original images have varying resolutions (e.g. 1296x968)
+2. `read_scannet_gray()` resizes to (scannetX, scannetY) = (640, 480)
+3. CoMatch pads/resizes to 832x832 for inference
+4. `mkpts*_f` are mapped back to the resized (640x480) space via `scale0/scale1`
+5. OneFormer labels are in **original image resolution**
+6. Visualization maps: `x_orig = x_mkpt * (orig_w / 640)`, `y_orig = y_mkpt * (orig_h / 480)`
+
 ## Dependencies
 
 - `transformers` (for OneFormer)
