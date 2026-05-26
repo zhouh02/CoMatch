@@ -23,7 +23,7 @@ from src.utils.plotting import make_matching_figures
 from src.utils.comm import gather, all_gather
 from src.utils.misc import lower_config, flattenList
 from src.utils.profiler import PassThroughProfiler
-from src.utils.semantic_consistency import SemanticLabelCache, compute_semantic_match_stats
+from src.utils.semantic_consistency import SemanticLabelCache, compute_semantic_match_stats, normalize_semantic_path_key
 
 from torch.profiler import profile
 
@@ -332,7 +332,7 @@ class PL_LoFTR(pl.LightningModule):
                 name0 = str(rel_pair_names[b][0])
                 name1 = str(rel_pair_names[b][1])
 
-                pair_id = f"{Path(name0).stem}_{Path(name1).stem}"
+                pair_id = f"{normalize_semantic_path_key(name0)}__{normalize_semantic_path_key(name1)}"
 
                 # Compute stats for this pair
                 stat = self._compute_pair_semantic_stats(
