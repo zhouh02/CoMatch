@@ -46,8 +46,8 @@ BASE_ARGS="${data_cfg_path} ${main_cfg_path} \
     --batch_size=${batch_size} --num_workers=${torch_num_workers} \
     --profiler_name=${profiler_name} \
     --benchmark \
-    --scannetX '640' \
-    --scannetY '480' \
+    --scannetX 640 \
+    --scannetY 480 \
     --rmbd 0 \
     --thr 0.2 \
     --ransac_times 1 \

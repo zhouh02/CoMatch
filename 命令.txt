@@ -1,0 +1,37 @@
+运行comatch推理，保存所有pair的逐匹配数据
+CUDA_VISIBLE_DEVICES=0,1,2 \
+SEMANTIC_DIAGNOSTIC=1 \
+ONEFORMER_DIR=outputs/oneformer_outdoor_test \
+SEMANTIC_DIAGNOSTIC_OUTPUT=outputs/semantic_diagnostic_outdoor_full \
+SEMANTIC_SCORE_THRESH=0.0 \
+SEMANTIC_SAVE_PER_MATCH=1 \
+N_GPUS_PER_NODE=3 \
+python test_semantic.py \
+  configs/data/megadepth_test_1500.py \
+  configs/loftr/comatch_full.py \
+  --ckpt_path=weights/comatch_outdoor.ckpt \
+  --megasize 1152 --thr 0.1 --ransac_times 5 --deter --npe \
+  --gpus 3 --accelerator ddp --num_workers 4 \
+  --semantic-diag \
+  --oneformer-dir outputs/oneformer_outdoor_test \
+  --semantic-output-dir outputs/semantic_diagnostic_outdoor_full \
+  --semantic-score-thresh 0.0 \
+  --semantic-save-per-match
+
+生成可视化
+python tools/semantic_covis/visualize_semantic_diagnostic_pair.py \
+  --per-match-jsonl outputs/semantic_diagnostic_outdoor_full/per_match_semantic_diagnostic.jsonl \
+  --image-root /ssd-data3/zh2025/datasets/MegaDepth \
+  --oneformer-dir outputs/oneformer_outdoor_test \
+  --output-dir outputs/semantic_diagnostic_visualizations_full \
+  --max-lines 500 \
+  --overlay-alpha 0.45
+
+
+
+scannet命令
+python scripts/precompute_oneformer_scannet_semantics.py     --data_cfg configs/data/scannet_test_1500.py     --cache_dir outputs/scannet_semantic_cache     --model_id /ssd-data3/zh2025/HFModel/oneformer_ade20k_swin_large     --device cuda
+
+python scripts/precompute_oneformer_scannet_semantics.py \
+    --cache_dir outputs/scannet_semantic_cache \
+    --validate_only
