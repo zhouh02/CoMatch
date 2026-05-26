@@ -378,6 +378,10 @@ def main():
             )
         )
 
+    # Set NPE config for ScanNet (same as test.py --npe --scannetX/Y)
+    config.LOFTR.COARSE.NPE = [832, 832, args.scannetX, args.scannetX]
+    print(f"NPE config: {config.LOFTR.COARSE.NPE}")
+
     # Load matcher
     print("\nLoading CoMatch matcher...")
     from src.loftr import LoFTR
