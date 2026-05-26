@@ -215,6 +215,59 @@ This could indicate:
 
 Check that label maps are in original image resolution, not 832x832.
 
+## ScanNet Support
+
+The semantic consistency analysis also supports ScanNet dataset evaluation.
+
+### Precompute OneFormer Semantic Cache for ScanNet
+
+```bash
+python scripts/precompute_oneformer_scannet_semantics.py \
+    --data_cfg configs/data/scannet_test_1500.py \
+    --cache_dir outputs/scannet_semantic_cache \
+    --model_id shi-labs/oneformer_ade20k_swin_large \
+    --device cuda
+```
+
+### Run ScanNet Evaluation with Semantic Analysis
+
+```bash
+python test.py \
+    configs/data/scannet_test_1500.py \
+    configs/loftr/comatch_full.py \
+    --ckpt_path=weights/comatch_outdoor.ckpt \
+    --semantic_cache_dir outputs/scannet_semantic_cache \
+    --semantic_ignore_labels "255,-1" \
+    --semantic_dump_name scannet_semantic \
+    --dump_dir outputs/comatch_scannet \
+    --scannetX 640 \
+    --scannetY 480 \
+    --thr 0.2
+```
+
+### Using Shell Script
+
+```bash
+# Standard evaluation
+bash scripts/reproduce_test/indoor_semantic.sh
+
+# With semantic analysis
+SEMANTIC_CACHE_DIR=outputs/scannet_semantic_cache \
+SEMANTIC_IGNORE_LABELS="255,-1" \
+DUMP_DIR=outputs/comatch_scannet \
+bash scripts/reproduce_test/indoor_semantic.sh
+```
+
+### Environment Variables for indoor_semantic.sh
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SEMANTIC_CACHE_DIR` | (empty) | Cache directory (must be set to enable) |
+| `SEMANTIC_IGNORE_LABELS` | `255,-1` | Labels to ignore |
+| `SEMANTIC_CONF_THR` | (empty) | Confidence threshold |
+| `SEMANTIC_DUMP_NAME` | `semantic_matches` | Output file base name |
+| `DUMP_DIR` | `outputs/comatch_full_scannet` | Dump directory |
+
 ## Dependencies
 
 - `transformers` (for OneFormer)
