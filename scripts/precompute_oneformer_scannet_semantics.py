@@ -410,7 +410,12 @@ def main():
         '--model_id',
         type=str,
         default='shi-labs/oneformer_ade20k_swin_large',
-        help='Hugging Face model id for OneFormer'
+        help='Hugging Face model id OR local directory for OneFormer'
+    )
+    parser.add_argument(
+        '--local_files_only',
+        action='store_true',
+        help='Only load model from local cache (offline mode)'
     )
     parser.add_argument(
         '--device',
@@ -533,8 +538,8 @@ def main():
 
         from transformers import OneFormerProcessor, OneFormerForUniversalSegmentation
         model_path = args.model_id
-        processor = OneFormerProcessor.from_pretrained(model_path, local_files_only=True)
-        model = OneFormerForUniversalSegmentation.from_pretrained(model_path, local_files_only=True)
+        processor = OneFormerProcessor.from_pretrained(model_path, args.local_files_only)
+        model = OneFormerForUniversalSegmentation.from_pretrained(model_path, args.local_files_only)
         model = model.to(args.device)
         model.eval()
 
@@ -694,8 +699,8 @@ def main():
     model_path = args.model_id
     if os.path.isdir(model_path):
         print(f"Loading model from local directory: {model_path}")
-    processor = OneFormerProcessor.from_pretrained(model_path, local_files_only=True)
-    model = OneFormerForUniversalSegmentation.from_pretrained(model_path, local_files_only=True)
+    processor = OneFormerProcessor.from_pretrained(model_path, args.local_files_only)
+    model = OneFormerForUniversalSegmentation.from_pretrained(model_path, args.local_files_only)
     model = model.to(args.device)
     model.eval()
 
