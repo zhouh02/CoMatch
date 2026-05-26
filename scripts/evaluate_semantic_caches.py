@@ -157,8 +157,8 @@ def main():
     print(f"  Joint cache: {args.joint_cache}")
 
     # Check availability
-    sep_entries = len(cache_sep.manifest) if cache_sep.manifest else 0
-    joint_entries = len(cache_joint.manifest) if cache_joint.manifest else 0
+    sep_entries = len(cache_sep._manifest) if cache_sep._manifest else 0
+    joint_entries = len(cache_joint._manifest) if cache_joint._manifest else 0
     print(f"  Separate entries: {sep_entries}")
     print(f"  Joint entries: {joint_entries}")
 
