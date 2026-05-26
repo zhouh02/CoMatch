@@ -3,20 +3,23 @@ Semantic consistency statistics for CoMatch evaluation.
 
 IMPORTANT NOTE:
 ----------------
-CoMatch may resize input images to a longer edge of 832 and pad to 832x832 for inference.
-However, the output keypoints `mkpts0_f` / `mkpts1_f` are already mapped back to the
-original MegaDepth image coordinates using `scale0` / `scale1`.
+MegaDepth:
+  CoMatch maps mkpts0_f / mkpts1_f back to original image coordinates via scale0/scale1.
+  Semantic label maps are in original image resolution (H_orig x W_orig).
+  Direct lookup is correct: label = sem[int(y), int(x)]
 
-Therefore, semantic label maps should be in original image resolution (H_orig x W_orig).
-When checking semantic consistency, we use the original coordinates directly:
-
-    label0 = sem0[int(y0), int(x0)]
-    label1 = sem1[int(y1), int(x1)]
+ScanNet:
+  CoMatch maps mkpts0_f / mkpts1_f back to the RESIZED space (scannetX x scannetY),
+  NOT the original image resolution. The scale0/scale1 are [1,1] for default 640x480.
+  Semantic label maps are in original image resolution (H_orig x W_orig).
+  You MUST pass mkpts_space_size=(640, 480) to compute_semantic_match_stats,
+  which will scale coordinates: x_orig = x_mkpt * (orig_w / 640)
 
 DO NOT:
 - Use image0/image1 tensor dimensions as semantic label map size
 - Map keypoints back to 832/padded dimensions
 - Multiply mkpts*_f by scale0/scale1 again
+- For ScanNet: do NOT use mkpts directly on original-resolution sem maps without scaling
 """
 
 import json
@@ -208,18 +211,23 @@ def compute_semantic_match_stats(
     conf: np.ndarray = None,
     ignore_labels: set = None,
     conf_thr: float = None,
+    mkpts_space_size: tuple = None,
 ) -> dict:
     """
     Compute semantic consistency statistics for matches.
 
     Args:
-        mkpts0: Nx2 array, original image coordinates [x, y]
-        mkpts1: Nx2 array, original image coordinates [x, y]
-        sem0: H0 x W0 label map for image 0
-        sem1: H1 x W1 label map for image 1
+        mkpts0: Nx2 array, match coordinates [x, y]
+        mkpts1: Nx2 array, match coordinates [x, y]
+        sem0: H0 x W0 label map for image 0 (original resolution)
+        sem1: H1 x W1 label map for image 1 (original resolution)
         conf: N confidence scores (optional)
         ignore_labels: Set of label IDs to ignore (optional)
         conf_thr: Minimum confidence threshold (optional)
+        mkpts_space_size: (W, H) tuple indicating the coordinate space of mkpts.
+            If provided and different from sem shape, mkpts will be scaled
+            to match sem resolution. For ScanNet, this is typically (640, 480).
+            For MegaDepth, mkpts are already in original resolution, so omit this.
 
     Returns:
         Dictionary with statistics:
@@ -231,6 +239,20 @@ def compute_semantic_match_stats(
         - num_cross_semantic: Matches with different semantic labels
         - cross_semantic_rate: ratio of cross-semantic to valid semantic
     """
+    # Scale mkpts to sem resolution if mkpts_space_size is provided
+    if mkpts_space_size is not None:
+        sp_w, sp_h = mkpts_space_size
+        sem0_h, sem0_w = sem0.shape
+        sem1_h, sem1_w = sem1.shape
+        if sp_w != sem0_w or sp_h != sem0_h:
+            mkpts0 = mkpts0.copy()
+            mkpts0[:, 0] = mkpts0[:, 0] * (sem0_w / sp_w)
+            mkpts0[:, 1] = mkpts0[:, 1] * (sem0_h / sp_h)
+        if sp_w != sem1_w or sp_h != sem1_h:
+            mkpts1 = mkpts1.copy()
+            mkpts1[:, 0] = mkpts1[:, 0] * (sem1_w / sp_w)
+            mkpts1[:, 1] = mkpts1[:, 1] * (sem1_h / sp_h)
+
     N = len(mkpts0)
     num_matches = N
 

@@ -302,6 +302,18 @@ class PL_LoFTR(pl.LightningModule):
             m_bids = m_bids.cpu().numpy() if m_bids is not None else None
             pair_names = batch.get('pair_names')
 
+            # Determine mkpts coordinate space for ScanNet
+            # ScanNet: mkpts*_f are in (scannetX, scannetY) space, not original resolution
+            # MegaDepth: mkpts*_f are already in original resolution
+            mkpts_space_size = None
+            if hasattr(self.config, 'DATASET') and hasattr(self.config.DATASET, 'NPE_NAME'):
+                npe_name = self.config.DATASET.NPE_NAME
+                if npe_name == 'scannet':
+                    mkpts_space_size = (
+                        self.config.DATASET.SCAN_IMG_RESIZEX,
+                        self.config.DATASET.SCAN_IMG_RESIZEY,
+                    )
+
             if pair_names is None:
                 return
 
@@ -337,14 +349,16 @@ class PL_LoFTR(pl.LightningModule):
                 # Compute stats for this pair
                 stat = self._compute_pair_semantic_stats(
                     pair_id, name0, name1,
-                    pair_mkpts0, pair_mkpts1, pair_conf
+                    pair_mkpts0, pair_mkpts1, pair_conf,
+                    mkpts_space_size=mkpts_space_size,
                 )
                 self._pair_semantic_stats.append(stat)
 
         except Exception as e:
             logger.warning(f"Failed to compute semantic stats: {e}")
 
-    def _compute_pair_semantic_stats(self, pair_id, name0, name1, mkpts0, mkpts1, conf):
+    def _compute_pair_semantic_stats(self, pair_id, name0, name1, mkpts0, mkpts1, conf,
+                                      mkpts_space_size=None):
         """Compute semantic stats for a single pair."""
         try:
             sem0 = self._semantic_cache.get_label(name0)
@@ -354,7 +368,8 @@ class PL_LoFTR(pl.LightningModule):
                 mkpts0, mkpts1, sem0, sem1,
                 conf=conf,
                 ignore_labels=self.semantic_ignore_labels,
-                conf_thr=self.semantic_conf_thr
+                conf_thr=self.semantic_conf_thr,
+                mkpts_space_size=mkpts_space_size,
             )
 
             return {
