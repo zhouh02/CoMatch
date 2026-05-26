@@ -42,7 +42,7 @@ DUMP_DIR="${DUMP_DIR:-outputs/comatch_full_scannet}"
 BASE_ARGS="${data_cfg_path} ${main_cfg_path} \
     --ckpt_path=${ckpt_path} \
     --dump_dir=${DUMP_DIR} \
-    --gpus=${n_gpus_per_node} --num_nodes=${n_nodes} --accelerator=\"ddp\" \
+    --gpus=${n_gpus_per_node} --num_nodes=${n_nodes} --accelerator=ddp \
     --batch_size=${batch_size} --num_workers=${torch_num_workers} \
     --profiler_name=${profiler_name} \
     --benchmark \
